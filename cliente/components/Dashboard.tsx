@@ -190,7 +190,14 @@ export default function Dashboard({ usuario, onLogout }: DashboardProps) {
 
     setLoading(true);
 
-    const searchFechaRegreso = tripType === 'round-trip' ? fechaRegreso : fechaSalida;
+    let searchFechaRegreso: string;
+    if (tripType === 'round-trip') {
+      searchFechaRegreso = fechaRegreso;
+    } else {
+      const salida = new Date(fechaSalida);
+      salida.setDate(salida.getDate() + 7);
+      searchFechaRegreso = salida.toISOString().split('T')[0];
+    }
 
     const payload = {
       origenId,
@@ -389,7 +396,7 @@ export default function Dashboard({ usuario, onLogout }: DashboardProps) {
                     </div>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-3">
+                  <div className={`grid gap-4 ${tripType === 'round-trip' ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                     <div className="space-y-3 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                       <label htmlFor="fechaSalida" className="block text-sm font-medium text-slate-700">Salida</label>
                       <input
@@ -402,6 +409,7 @@ export default function Dashboard({ usuario, onLogout }: DashboardProps) {
                       />
                     </div>
 
+                    {tripType === 'round-trip' && (
                     <div className="space-y-3 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                       <label htmlFor="fechaRegreso" className="block text-sm font-medium text-slate-700">Hasta</label>
                       <input
@@ -409,12 +417,11 @@ export default function Dashboard({ usuario, onLogout }: DashboardProps) {
                         type="date"
                         value={fechaRegreso}
                         onChange={(event) => setFechaRegreso(event.target.value)}
-                        required={tripType === 'round-trip'}
-                        disabled={tripType !== 'round-trip'}
-                        placeholder={tripType === 'round-trip' ? '' : 'Activa Ida y vuelta'}
-                        className={`w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 focus:border-blue-500 focus:outline-none ${tripType !== 'round-trip' ? 'cursor-not-allowed bg-slate-100 text-slate-400' : ''}`}
+                        required
+                        className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 focus:border-blue-500 focus:outline-none"
                       />
                     </div>
+                    )}
 
                     <div className="space-y-3 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                       <label htmlFor="pasajeros" className="block text-sm font-medium text-slate-700">Pasajeros</label>

@@ -2,8 +2,19 @@
 
 import { useEffect, useState } from 'react';
 
+interface Usuario {
+  usuario_id: number;
+  nombre: string;
+  apellido: string;
+  email: string;
+  telefono?: string;
+  direccion?: string;
+  fecha_nacimiento?: string;
+  fecha_registro?: string;
+}
+
 interface LoginFormProps {
-  onLoginSuccess: (usuario: { [key: string]: any }) => void;
+  onLoginSuccess: (usuario: Usuario) => void;
 }
 
 export default function LoginForm({ onLoginSuccess }: LoginFormProps) {

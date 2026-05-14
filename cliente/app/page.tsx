@@ -4,9 +4,20 @@ import { useEffect, useState } from 'react';
 import AuthForm from '@/components/AuthForm';
 import Dashboard from '@/components/Dashboard';
 
+interface Usuario {
+  usuario_id: number;
+  nombre: string;
+  apellido: string;
+  email: string;
+  telefono?: string;
+  direccion?: string;
+  fecha_nacimiento?: string;
+  fecha_registro?: string;
+}
+
 export default function Home() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [usuario, setUsuario] = useState<{ [key: string]: any } | null>(null);
+  const [usuario, setUsuario] = useState<Usuario | null>(null);
 
   useEffect(() => {
     const stored = typeof window !== 'undefined' ? localStorage.getItem('usuario') : null;
@@ -19,7 +30,7 @@ export default function Home() {
     }
   }, []);
 
-  const handleLoginSuccess = (user: { [key: string]: any }) => {
+  const handleLoginSuccess = (user: Usuario) => {
     setUsuario(user);
   };
 

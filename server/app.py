@@ -21,19 +21,19 @@ load_dotenv()
 ENV = os.environ.get('ENV', 'development').lower()
 
 if ENV == 'production':
-    MY_SQL_HOST = os.environ.get('MYSQL_ADDON_HOST', 'localhost')
-    MY_SQL_USER = os.environ.get('MYSQL_ADDON_USER', 'root')
-    MY_SQL_PASS = os.environ.get('MYSQL_ADDON_PASSWORD', '')
+    MY_SQL_HOST = os.environ.get('MYSQL_ADDON_HOST', 'blm5x9oepuyj2mg73vdk-mysql.services.clever-cloud.com')
+    MY_SQL_USER = os.environ.get('MYSQL_ADDON_USER', 'urmow4dfpnsddjqz')
+    MY_SQL_PASS = os.environ.get('MYSQL_ADDON_PASSWORD', '5xet9ohmSY9r4KYf5HYR')
     MY_SQL_PORT = int(os.environ.get('MYSQL_ADDON_PORT', 3306))
-    MY_SQL_DB = os.environ.get('MYSQL_ADDON_DB', 'pasajes')
+    MY_SQL_DB = os.environ.get('MYSQL_ADDON_DB', 'blm5x9oepuyj2mg73vdk')
 else:
     MY_SQL_HOST = os.environ.get('MY_SQL_HOST', 'localhost')
     MY_SQL_USER = os.environ.get('MY_SQL_USER', 'root')
-    MY_SQL_PASS = os.environ.get('MY_SQL_PASS', '')
+    MY_SQL_PASS = os.environ.get('MY_SQL_PASS', '78531015aA@')
     MY_SQL_PORT = int(os.environ.get('MY_SQL_PORT', 3306))
     MY_SQL_DB = os.environ.get('MY_SQL_DB', 'pasajes')
 
-PORT = int(os.environ.get('PORT', 3000))
+PORT = int(os.environ.get('PORT', 5000))
 
 app = Flask(__name__)
 CORS(app, resources={

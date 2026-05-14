@@ -3,9 +3,20 @@
 import LoginForm from './LoginForm';
 import RegisterForm from './RegisterForm';
 
+interface Usuario {
+  usuario_id: number;
+  nombre: string;
+  apellido: string;
+  email: string;
+  telefono?: string;
+  direccion?: string;
+  fecha_nacimiento?: string;
+  fecha_registro?: string;
+}
+
 interface AuthFormProps {
   mode: 'login' | 'register';
-  onLoginSuccess: (usuario: { [key: string]: any }) => void;
+  onLoginSuccess: (usuario: Usuario) => void;
 }
 
 export default function AuthForm({ mode, onLoginSuccess }: AuthFormProps) {
