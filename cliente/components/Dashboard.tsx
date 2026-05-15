@@ -233,6 +233,14 @@ export default function Dashboard({ usuario, onLogout }: DashboardProps) {
     }
   };
 
+  const today = new Date().toLocaleDateString('en-CA');
+  const minFechaRegreso = fechaSalida
+    ? (() => {
+        const [y, m, d] = fechaSalida.split('-').map(Number);
+        return new Date(y, m - 1, d + 1).toLocaleDateString('en-CA');
+      })()
+    : new Date(Date.now() + 86400000).toLocaleDateString('en-CA');
+
   return (
     <>
     {/* Modal buscando vuelos */}
@@ -403,7 +411,13 @@ export default function Dashboard({ usuario, onLogout }: DashboardProps) {
                         id="fechaSalida"
                         type="date"
                         value={fechaSalida}
-                        onChange={(event) => setFechaSalida(event.target.value)}
+                        min={today}
+                        onChange={(event) => {
+                          setFechaSalida(event.target.value);
+                          if (fechaRegreso && event.target.value >= fechaRegreso) {
+                            setFechaRegreso('');
+                          }
+                        }}
                         required
                         className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 focus:border-blue-500 focus:outline-none"
                       />
@@ -416,6 +430,7 @@ export default function Dashboard({ usuario, onLogout }: DashboardProps) {
                         id="fechaRegreso"
                         type="date"
                         value={fechaRegreso}
+                        min={minFechaRegreso}
                         onChange={(event) => setFechaRegreso(event.target.value)}
                         required
                         className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 focus:border-blue-500 focus:outline-none"
@@ -429,8 +444,12 @@ export default function Dashboard({ usuario, onLogout }: DashboardProps) {
                         id="pasajeros"
                         type="number"
                         min={1}
+                        max={10}
                         value={pasajeros}
-                        onChange={(event) => setPasajeros(Number(event.target.value))}
+                        onChange={(event) => {
+                          const val = Math.max(1, Math.min(10, Number(event.target.value)));
+                          setPasajeros(val);
+                        }}
                         required
                         className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 focus:border-blue-500 focus:outline-none"
                       />

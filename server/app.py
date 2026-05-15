@@ -201,6 +201,62 @@ def ensure_pagos_columns(cursor):
     if 'cantidad_cuotas' not in columnas:
         cursor.execute('ALTER TABLE pagos ADD COLUMN cantidad_cuotas INT NOT NULL DEFAULT 1')
 
+def ensure_vuelos_asientos_column(cursor):
+    """Asegura la columna asientos_disponibles en vuelos."""
+    cursor.execute(
+        '''
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'vuelos'
+        ''',
+        (MY_SQL_DB,)
+    )
+    columnas = {row[0] for row in cursor.fetchall()}
+
+    if 'asientos_disponibles' not in columnas:
+        cursor.execute(
+            '''
+            ALTER TABLE vuelos
+            ADD COLUMN asientos_disponibles INT NOT NULL DEFAULT 0
+            '''
+        )
+        cursor.execute(
+            '''
+            UPDATE vuelos
+            SET asientos_disponibles = capacidad_total
+            WHERE asientos_disponibles = 0
+            '''
+        )
+
+def ensure_reservas_asiento_column(cursor):
+    """Asegura la columna numero_asiento en usuario_reservas_vuelo."""
+    cursor.execute(
+        '''
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'usuario_reservas_vuelo'
+        ''',
+        (MY_SQL_DB,)
+    )
+    columnas = {row[0] for row in cursor.fetchall()}
+
+    if 'numero_asiento' not in columnas:
+        cursor.execute('ALTER TABLE usuario_reservas_vuelo ADD COLUMN numero_asiento VARCHAR(10) NULL')
+
+def ensure_cancelaciones_table(cursor):
+    """Asegura tabla para auditar cancelaciones de reservas."""
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS cancelaciones_reservas (
+            cancelacion_id INT AUTO_INCREMENT PRIMARY KEY,
+            reserva_id INT NOT NULL,
+            vuelo_id INT NOT NULL,
+            usuario_id INT NOT NULL,
+            fecha_cancelacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({'message': 'Servidor activo. Usa /usuario para consultar datos.'})
@@ -290,6 +346,35 @@ def airport_suggestions():
 
     return jsonify(normalized)
 
+@app.route('/asientos-ocupados/<int:vuelo_id>', methods=['GET'])
+def asientos_ocupados(vuelo_id):
+    """Devuelve números de asiento ocupados para un vuelo."""
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        schema_cursor = connection.cursor()
+        ensure_reservas_asiento_column(schema_cursor)
+        schema_cursor.close()
+
+        cursor.execute(
+            '''
+            SELECT numero_asiento
+            FROM usuario_reservas_vuelo
+            WHERE vuelo_id = %s AND numero_asiento IS NOT NULL AND TRIM(numero_asiento) <> ''
+            ''',
+            (vuelo_id,)
+        )
+        rows = cursor.fetchall()
+        ocupados = [row['numero_asiento'] for row in rows if row.get('numero_asiento')]
+
+        cursor.close()
+        connection.close()
+        return jsonify({'ocupados': ocupados}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
 @app.route('/buscar-vuelos', methods=['POST'])
 def buscar_vuelos():
     try:
@@ -299,6 +384,7 @@ def buscar_vuelos():
         trip_type = (data.get('tripType') or 'one-way').strip()
         fecha_salida = (data.get('fechaSalida') or '').strip()
         fecha_regreso = (data.get('fechaRegreso') or '').strip()
+        pasajeros = data.get('pasajeros', 1)
 
         if origen_id is None or destino_id is None or not fecha_salida or not fecha_regreso:
             return jsonify({'error': 'Origen, destino y rango de fechas son requeridos'}), 400
@@ -306,8 +392,12 @@ def buscar_vuelos():
         try:
             origen_id = int(origen_id)
             destino_id = int(destino_id)
+            pasajeros = int(pasajeros)
         except (TypeError, ValueError):
-            return jsonify({'error': 'Origen y destino deben ser IDs numéricos'}), 400
+            return jsonify({'error': 'Origen, destino y pasajeros deben ser numéricos'}), 400
+
+        if pasajeros < 1 or pasajeros > 10:
+            return jsonify({'error': 'La cantidad de pasajeros debe estar entre 1 y 10'}), 400
 
         print('BUSCAR VUELOS payload:', data)
 
@@ -340,34 +430,27 @@ def buscar_vuelos():
             start_date = selected_salida
             end_date = selected_regreso
 
-        print('BUSCAR VUELOS:', {
-            'origen_id': origen_id,
-            'destino_id': destino_id,
-            'trip_type': trip_type,
-            'fecha_salida_input': fecha_salida,
-            'fecha_regreso_input': fecha_regreso,
-            'selected_salida': str(selected_salida),
-            'selected_regreso': str(selected_regreso),
-            'search_start_date': str(start_date),
-            'search_end_date': str(end_date),
-        })
-
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True)
         try:
+            schema_cursor = connection.cursor()
+            ensure_vuelos_asientos_column(schema_cursor)
+            schema_cursor.close()
+
             sql_search = '''
                 SELECT v.vuelo_id, v.codigo_vuelo, a_origen.nombre AS origen_nombre, a_destino.nombre AS destino_nombre,
-                       v.fecha_salida, v.fecha_llegada, v.capacidad_total, v.precio_base
-                FROM vuelos_disponibles v
+                                             v.fecha_salida, v.fecha_llegada, v.capacidad_total, v.asientos_disponibles, v.precio_base
+                FROM vuelos v
                 JOIN aeropuertos a_origen ON v.aeropuerto_origen = a_origen.aeropuerto_id
                 JOIN aeropuertos a_destino ON v.aeropuerto_destino = a_destino.aeropuerto_id
                 WHERE DATE(v.fecha_salida) >= %s
                   AND DATE(v.fecha_llegada) <= %s
                   AND v.aeropuerto_origen = %s
                   AND v.aeropuerto_destino = %s
+                                    AND v.asientos_disponibles >= %s
                 ORDER BY v.fecha_salida
             '''
-            params_search = (str(start_date), str(end_date), origen_id, destino_id)
+            params_search = (str(start_date), str(end_date), origen_id, destino_id, pasajeros)
             
             cursor.execute(sql_search, params_search)
             results = cursor.fetchall()
@@ -452,11 +535,23 @@ def login():
         
         # Validar campos requeridos
         if 'email' not in data or 'password' not in data:
-            return jsonify({'error': 'Email y contraseña requeridos'}), 400
+            return jsonify({'error': 'Email/usuario y contraseña requeridos'}), 400
+
+        identificador = str(data.get('email', '')).strip()
+        if not identificador:
+            return jsonify({'error': 'Email/usuario requerido'}), 400
         
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True, buffered=True)
-        cursor.execute('SELECT usuario_id, nombre, apellido, email, telefono, direccion, fecha_nacimiento, fecha_registro, contraseña_hash FROM Usuarios WHERE email = %s', (data['email'],))
+        cursor.execute(
+            '''
+            SELECT usuario_id, nombre, apellido, email, telefono, direccion, fecha_nacimiento, fecha_registro, contraseña_hash
+            FROM Usuarios
+            WHERE email = %s OR LOWER(nombre) = %s
+            LIMIT 1
+            ''',
+            (identificador, identificador.lower())
+        )
         usuario = cursor.fetchone()
         
         if not usuario or not verify_password(data['password'], usuario['contraseña_hash']):
@@ -466,6 +561,10 @@ def login():
         
         # Eliminar el hash de la respuesta
         usuario.pop('contraseña_hash', None)
+        usuario['es_admin'] = (
+            str(usuario.get('email') or '').strip().lower() == 'admin@gmail.com'
+            or identificador.lower() == 'admin@gmail.com'
+        )
         cursor.close()
         connection.close()
         
@@ -486,14 +585,31 @@ def login():
 def confirmar_reserva():
     """Crea reservas en usuario_reservas_vuelo para el pasajero principal y adicionales"""
     try:
-        data = request.get_json()
-        # Validar campos requeridos
-        if not data.get('vuelo_id') or not data.get('usuario_principal_id'):
-            return jsonify({'error': 'vuelo_id y usuario_principal_id requeridos'}), 400
+        data = request.get_json() or {}
+        print('CONFIRMAR RESERVA payload:', data)
 
-        vuelo_id = data['vuelo_id']
-        usuario_principal_id = data['usuario_principal_id']
+        # Validar campos requeridos
+        vuelo_id = data.get('vuelo_id')
+        usuario_principal_id = data.get('usuario_principal_id')
+        if vuelo_id is None:
+            return jsonify({'error': 'Campo requerido faltante: vuelo_id'}), 400
+        if usuario_principal_id is None:
+            return jsonify({'error': 'Campo requerido faltante: usuario_principal_id'}), 400
+
+        try:
+            vuelo_id = int(vuelo_id)
+            usuario_principal_id = int(usuario_principal_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'vuelo_id y usuario_principal_id deben ser numéricos'}), 400
+
         pasajeros_adicionales = data.get('pasajeros_adicionales', [])
+        if not isinstance(pasajeros_adicionales, list):
+            return jsonify({'error': 'pasajeros_adicionales debe ser una lista de IDs'}), 400
+        try:
+            pasajeros_adicionales = [int(uid) for uid in pasajeros_adicionales]
+        except (TypeError, ValueError):
+            return jsonify({'error': 'pasajeros_adicionales contiene IDs inválidos'}), 400
+
         estado_reserva = data.get('estado', 'confirmada')  # 'confirmada' o 'pendiente'
 
         # Lista de todos los usuario_ids a reservar (principal + adicionales)
@@ -502,14 +618,33 @@ def confirmar_reserva():
         connection = get_db_connection()
         cursor = connection.cursor()
 
+        schema_cursor = connection.cursor()
+        ensure_vuelos_asientos_column(schema_cursor)
+        ensure_reservas_asiento_column(schema_cursor)
+        schema_cursor.close()
+
+        asientos_solicitados = len(todos_usuarios)
+        cursor.execute(
+            '''
+            UPDATE vuelos
+            SET asientos_disponibles = asientos_disponibles - %s
+            WHERE vuelo_id = %s AND asientos_disponibles >= %s
+            ''',
+            (asientos_solicitados, vuelo_id, asientos_solicitados)
+        )
+        if cursor.rowcount == 0:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'No hay asientos disponibles suficientes para esta reserva'}), 409
+
         fecha_reserva = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # Insertar una fila en usuario_reservas_vuelo por cada pasajero
         reserva_ids = []
         for usuario_id in todos_usuarios:
             cursor.execute('''
-                INSERT INTO usuario_reservas_vuelo (usuario_id, vuelo_id, fecha_reserva, estado)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO usuario_reservas_vuelo (usuario_id, vuelo_id, fecha_reserva, estado, numero_asiento)
+                VALUES (%s, %s, %s, %s, NULL)
             ''', (usuario_id, vuelo_id, fecha_reserva, estado_reserva))
             reserva_ids.append(cursor.lastrowid)
 
@@ -521,7 +656,7 @@ def confirmar_reserva():
             'mensaje': f"Reservas creadas con estado '{estado_reserva}'",
             'reserva_ids': reserva_ids,
             'cantidad_pasajeros': len(todos_usuarios),
-            'estado': estado_reserva
+            'estado': estado_reserva,
         }), 201
 
     except Error as exc:
@@ -547,6 +682,7 @@ def mis_reservas(usuario_id):
                 urv.vuelo_id,
                 urv.fecha_reserva,
                 urv.estado,
+                urv.numero_asiento,
                 vd.codigo_vuelo,
                 vd.fecha_salida,
                 vd.fecha_llegada,
@@ -566,7 +702,7 @@ def mis_reservas(usuario_id):
                 p.cantidad_cuotas as pago_cuotas,
                 RIGHT(tu.numero, 4) as pago_tarjeta_ultimos4
             FROM usuario_reservas_vuelo urv
-            JOIN vuelos_disponibles vd ON urv.vuelo_id = vd.vuelo_id
+            JOIN vuelos vd ON urv.vuelo_id = vd.vuelo_id
             JOIN aeropuertos ao ON vd.aeropuerto_origen = ao.aeropuerto_id
             JOIN aeropuertos ad ON vd.aeropuerto_destino = ad.aeropuerto_id
             JOIN Usuarios u ON urv.usuario_id = u.usuario_id
@@ -600,12 +736,45 @@ def cancelar_reserva(reserva_id):
     try:
         connection = get_db_connection()
         cursor = connection.cursor()
+
+        schema_cursor = connection.cursor()
+        ensure_vuelos_asientos_column(schema_cursor)
+        ensure_cancelaciones_table(schema_cursor)
+        schema_cursor.close()
+
+        cursor.execute('SELECT vuelo_id, usuario_id FROM usuario_reservas_vuelo WHERE reserva_id = %s', (reserva_id,))
+        reserva = cursor.fetchone()
+        if not reserva:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'Reserva no encontrada'}), 404
+
+        vuelo_id = reserva[0]
+        usuario_id = reserva[1]
+
+        cursor.execute(
+            '''
+            INSERT INTO cancelaciones_reservas (reserva_id, vuelo_id, usuario_id)
+            VALUES (%s, %s, %s)
+            ''',
+            (reserva_id, vuelo_id, usuario_id)
+        )
         
         # Primero eliminar el pago asociado (si existe)
         cursor.execute('DELETE FROM pagos WHERE reserva_id = %s', (reserva_id,))
         
         # Luego eliminar la reserva
         cursor.execute('DELETE FROM usuario_reservas_vuelo WHERE reserva_id = %s', (reserva_id,))
+
+        if cursor.rowcount > 0:
+            cursor.execute(
+                '''
+                UPDATE vuelos
+                SET asientos_disponibles = asientos_disponibles + 1
+                WHERE vuelo_id = %s
+                ''',
+                (vuelo_id,)
+            )
         
         connection.commit()
         cursor.close()
@@ -792,6 +961,7 @@ def pagar_reserva():
         cursor = connection.cursor(dictionary=True, buffered=True)
         schema_cursor = connection.cursor()
         ensure_pagos_columns(schema_cursor)
+        ensure_reservas_asiento_column(schema_cursor)
         schema_cursor.close()
 
         # Obtener datos de la tarjeta para validar y recuperar ultimos 4
@@ -810,7 +980,7 @@ def pagar_reserva():
         cursor.execute('''
             SELECT urv.vuelo_id, vd.precio_base
             FROM usuario_reservas_vuelo urv
-            JOIN vuelos_disponibles vd ON urv.vuelo_id = vd.vuelo_id
+            JOIN vuelos vd ON urv.vuelo_id = vd.vuelo_id
             WHERE urv.reserva_id = %s
         ''', (reserva_id,))
         reserva = cursor.fetchone()
@@ -848,6 +1018,526 @@ def pagar_reserva():
     except Error as exc:
         return jsonify({'error': str(exc)}), 500
     except Exception as exc:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/aeropuertos', methods=['GET'])
+def admin_aeropuertos():
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            '''
+            SELECT aeropuerto_id, nombre, ciudad, provincia, codigo_IATA
+            FROM aeropuertos
+            ORDER BY provincia, nombre
+            '''
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        connection.close()
+        return jsonify({'aeropuertos': rows}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/vuelos', methods=['GET'])
+def admin_vuelos_listar():
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        schema_cursor = connection.cursor()
+        ensure_vuelos_asientos_column(schema_cursor)
+        schema_cursor.close()
+
+        cursor.execute(
+            '''
+            SELECT
+                v.vuelo_id,
+                v.codigo_vuelo,
+                v.aeropuerto_origen,
+                v.aeropuerto_destino,
+                ao.nombre AS origen_nombre,
+                ad.nombre AS destino_nombre,
+                v.fecha_salida,
+                v.fecha_llegada,
+                v.capacidad_total,
+                v.asientos_disponibles,
+                v.precio_base
+            FROM vuelos v
+            JOIN aeropuertos ao ON v.aeropuerto_origen = ao.aeropuerto_id
+            JOIN aeropuertos ad ON v.aeropuerto_destino = ad.aeropuerto_id
+            ORDER BY v.fecha_salida DESC
+            '''
+        )
+        rows = cursor.fetchall()
+
+        for row in rows:
+            if row.get('fecha_salida') is not None and hasattr(row['fecha_salida'], 'strftime'):
+                row['fecha_salida'] = row['fecha_salida'].strftime('%Y-%m-%d %H:%M:%S')
+            if row.get('fecha_llegada') is not None and hasattr(row['fecha_llegada'], 'strftime'):
+                row['fecha_llegada'] = row['fecha_llegada'].strftime('%Y-%m-%d %H:%M:%S')
+
+        cursor.close()
+        connection.close()
+        return jsonify({'vuelos': rows}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/vuelos', methods=['POST'])
+def admin_vuelos_crear():
+    try:
+        data = request.get_json() or {}
+        campos = ['codigo_vuelo', 'aeropuerto_origen', 'aeropuerto_destino', 'fecha_salida', 'fecha_llegada', 'capacidad_total', 'precio_base']
+        faltantes = [c for c in campos if data.get(c) in (None, '')]
+        if faltantes:
+            return jsonify({'error': f'Campos faltantes: {", ".join(faltantes)}'}), 400
+
+        codigo_vuelo = str(data.get('codigo_vuelo')).strip().upper()
+        aeropuerto_origen = int(data.get('aeropuerto_origen'))
+        aeropuerto_destino = int(data.get('aeropuerto_destino'))
+        capacidad_total = int(data.get('capacidad_total'))
+        precio_base = float(data.get('precio_base'))
+        asientos_disponibles = data.get('asientos_disponibles')
+        asientos_disponibles = int(asientos_disponibles) if asientos_disponibles not in (None, '') else capacidad_total
+        fecha_salida = str(data.get('fecha_salida')).strip().replace('T', ' ')
+        fecha_llegada = str(data.get('fecha_llegada')).strip().replace('T', ' ')
+
+        if aeropuerto_origen == aeropuerto_destino:
+            return jsonify({'error': 'Origen y destino no pueden ser iguales'}), 400
+        if capacidad_total < 1:
+            return jsonify({'error': 'La capacidad total debe ser mayor a 0'}), 400
+        if asientos_disponibles < 0 or asientos_disponibles > capacidad_total:
+            return jsonify({'error': 'Los asientos disponibles deben estar entre 0 y la capacidad total'}), 400
+        if precio_base <= 0:
+            return jsonify({'error': 'El precio base debe ser mayor a 0'}), 400
+
+        try:
+            dt_salida = datetime.strptime(fecha_salida, '%Y-%m-%d %H:%M:%S')
+            dt_llegada = datetime.strptime(fecha_llegada, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            return jsonify({'error': 'Formato de fechas inválido. Usa YYYY-MM-DD HH:MM:SS'}), 400
+
+        if dt_llegada <= dt_salida:
+            return jsonify({'error': 'La llegada debe ser posterior a la salida'}), 400
+
+        connection = get_db_connection()
+        cursor = connection.cursor()
+        schema_cursor = connection.cursor()
+        ensure_vuelos_asientos_column(schema_cursor)
+        schema_cursor.close()
+
+        cursor.execute(
+            '''
+            INSERT INTO vuelos (
+                codigo_vuelo, aeropuerto_origen, aeropuerto_destino, fecha_salida,
+                fecha_llegada, capacidad_total, asientos_disponibles, precio_base
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ''',
+            (
+                codigo_vuelo,
+                aeropuerto_origen,
+                aeropuerto_destino,
+                dt_salida.strftime('%Y-%m-%d %H:%M:%S'),
+                dt_llegada.strftime('%Y-%m-%d %H:%M:%S'),
+                capacidad_total,
+                asientos_disponibles,
+                precio_base,
+            )
+        )
+        nuevo_id = cursor.lastrowid
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return jsonify({'mensaje': 'Vuelo creado', 'vuelo_id': nuevo_id}), 201
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Datos numéricos inválidos en el formulario'}), 400
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/vuelos/<int:vuelo_id>', methods=['PUT'])
+def admin_vuelos_actualizar(vuelo_id):
+    try:
+        data = request.get_json() or {}
+        campos = ['codigo_vuelo', 'aeropuerto_origen', 'aeropuerto_destino', 'fecha_salida', 'fecha_llegada', 'capacidad_total', 'precio_base']
+        faltantes = [c for c in campos if data.get(c) in (None, '')]
+        if faltantes:
+            return jsonify({'error': f'Campos faltantes: {", ".join(faltantes)}'}), 400
+
+        codigo_vuelo = str(data.get('codigo_vuelo')).strip().upper()
+        aeropuerto_origen = int(data.get('aeropuerto_origen'))
+        aeropuerto_destino = int(data.get('aeropuerto_destino'))
+        capacidad_total = int(data.get('capacidad_total'))
+        precio_base = float(data.get('precio_base'))
+        asientos_disponibles = data.get('asientos_disponibles')
+        asientos_disponibles = int(asientos_disponibles) if asientos_disponibles not in (None, '') else capacidad_total
+        fecha_salida = str(data.get('fecha_salida')).strip().replace('T', ' ')
+        fecha_llegada = str(data.get('fecha_llegada')).strip().replace('T', ' ')
+
+        if aeropuerto_origen == aeropuerto_destino:
+            return jsonify({'error': 'Origen y destino no pueden ser iguales'}), 400
+        if capacidad_total < 1:
+            return jsonify({'error': 'La capacidad total debe ser mayor a 0'}), 400
+        if asientos_disponibles < 0 or asientos_disponibles > capacidad_total:
+            return jsonify({'error': 'Los asientos disponibles deben estar entre 0 y la capacidad total'}), 400
+        if precio_base <= 0:
+            return jsonify({'error': 'El precio base debe ser mayor a 0'}), 400
+
+        try:
+            dt_salida = datetime.strptime(fecha_salida, '%Y-%m-%d %H:%M:%S')
+            dt_llegada = datetime.strptime(fecha_llegada, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            return jsonify({'error': 'Formato de fechas inválido. Usa YYYY-MM-DD HH:MM:SS'}), 400
+
+        if dt_llegada <= dt_salida:
+            return jsonify({'error': 'La llegada debe ser posterior a la salida'}), 400
+
+        connection = get_db_connection()
+        cursor = connection.cursor()
+        schema_cursor = connection.cursor()
+        ensure_vuelos_asientos_column(schema_cursor)
+        schema_cursor.close()
+
+        cursor.execute(
+            '''
+            UPDATE vuelos
+            SET codigo_vuelo = %s,
+                aeropuerto_origen = %s,
+                aeropuerto_destino = %s,
+                fecha_salida = %s,
+                fecha_llegada = %s,
+                capacidad_total = %s,
+                asientos_disponibles = %s,
+                precio_base = %s
+            WHERE vuelo_id = %s
+            ''',
+            (
+                codigo_vuelo,
+                aeropuerto_origen,
+                aeropuerto_destino,
+                dt_salida.strftime('%Y-%m-%d %H:%M:%S'),
+                dt_llegada.strftime('%Y-%m-%d %H:%M:%S'),
+                capacidad_total,
+                asientos_disponibles,
+                precio_base,
+                vuelo_id,
+            )
+        )
+        if cursor.rowcount == 0:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'Vuelo no encontrado'}), 404
+
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return jsonify({'mensaje': 'Vuelo actualizado'}), 200
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Datos numéricos inválidos en el formulario'}), 400
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/vuelos/<int:vuelo_id>', methods=['DELETE'])
+def admin_vuelos_eliminar(vuelo_id):
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor()
+
+        cursor.execute('SELECT COUNT(*) FROM usuario_reservas_vuelo WHERE vuelo_id = %s', (vuelo_id,))
+        reservas_count = cursor.fetchone()[0]
+        if reservas_count > 0:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'No se puede eliminar: el vuelo tiene reservas asociadas'}), 409
+
+        cursor.execute('DELETE FROM vuelos WHERE vuelo_id = %s', (vuelo_id,))
+        if cursor.rowcount == 0:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'Vuelo no encontrado'}), 404
+
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return jsonify({'mensaje': 'Vuelo eliminado'}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/usuarios', methods=['GET'])
+def admin_usuarios_listar():
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            '''
+            SELECT usuario_id, nombre, apellido, email, telefono, direccion, fecha_nacimiento, fecha_registro
+            FROM Usuarios
+            ORDER BY fecha_registro DESC
+            '''
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            for key in ('fecha_nacimiento', 'fecha_registro'):
+                if row.get(key) is not None and hasattr(row[key], 'strftime'):
+                    row[key] = row[key].strftime('%Y-%m-%d %H:%M:%S')
+
+        cursor.close()
+        connection.close()
+        return jsonify({'usuarios': rows}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/usuarios', methods=['POST'])
+def admin_usuarios_crear():
+    try:
+        data = request.get_json() or {}
+        campos = ['nombre', 'apellido', 'email', 'telefono', 'direccion', 'fecha_nacimiento', 'password']
+        faltantes = [c for c in campos if str(data.get(c, '')).strip() == '']
+        if faltantes:
+            return jsonify({'error': f'Campos faltantes: {", ".join(faltantes)}'}), 400
+
+        nombre = str(data.get('nombre')).strip()
+        apellido = str(data.get('apellido')).strip()
+        email = str(data.get('email')).strip().lower()
+        telefono = str(data.get('telefono')).strip()
+        direccion = str(data.get('direccion')).strip()
+        fecha_nacimiento = str(data.get('fecha_nacimiento')).strip()
+        password = str(data.get('password')).strip()
+
+        if len(password) < 6:
+            return jsonify({'error': 'La contraseña debe tener al menos 6 caracteres'}), 400
+
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True, buffered=True)
+
+        cursor.execute('SELECT usuario_id FROM Usuarios WHERE email = %s', (email,))
+        if cursor.fetchone():
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'El email ya está registrado'}), 409
+
+        contraseña_hash = hash_password(password)
+        fecha_registro = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute(
+            '''
+            INSERT INTO Usuarios (nombre, apellido, email, contraseña_hash, telefono, direccion, fecha_nacimiento, fecha_registro)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ''',
+            (nombre, apellido, email, contraseña_hash, telefono, direccion, fecha_nacimiento, fecha_registro)
+        )
+        nuevo_id = cursor.lastrowid
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return jsonify({'mensaje': 'Usuario creado', 'usuario_id': nuevo_id}), 201
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/usuarios/<int:usuario_id>', methods=['PUT'])
+def admin_usuarios_actualizar(usuario_id):
+    try:
+        data = request.get_json() or {}
+        campos = ['nombre', 'apellido', 'email', 'telefono', 'direccion', 'fecha_nacimiento']
+        faltantes = [c for c in campos if str(data.get(c, '')).strip() == '']
+        if faltantes:
+            return jsonify({'error': f'Campos faltantes: {", ".join(faltantes)}'}), 400
+
+        nombre = str(data.get('nombre')).strip()
+        apellido = str(data.get('apellido')).strip()
+        email = str(data.get('email')).strip().lower()
+        telefono = str(data.get('telefono')).strip()
+        direccion = str(data.get('direccion')).strip()
+        fecha_nacimiento = str(data.get('fecha_nacimiento')).strip()
+        password = str(data.get('password') or '').strip()
+
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True, buffered=True)
+
+        cursor.execute('SELECT usuario_id FROM Usuarios WHERE usuario_id = %s', (usuario_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+
+        cursor.execute('SELECT usuario_id FROM Usuarios WHERE email = %s AND usuario_id <> %s', (email, usuario_id))
+        if cursor.fetchone():
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'El email ya está en uso por otro usuario'}), 409
+
+        if password:
+            if len(password) < 6:
+                cursor.close()
+                connection.close()
+                return jsonify({'error': 'La contraseña debe tener al menos 6 caracteres'}), 400
+            contraseña_hash = hash_password(password)
+            cursor.execute(
+                '''
+                UPDATE Usuarios
+                SET nombre = %s, apellido = %s, email = %s, telefono = %s, direccion = %s,
+                    fecha_nacimiento = %s, contraseña_hash = %s
+                WHERE usuario_id = %s
+                ''',
+                (nombre, apellido, email, telefono, direccion, fecha_nacimiento, contraseña_hash, usuario_id)
+            )
+        else:
+            cursor.execute(
+                '''
+                UPDATE Usuarios
+                SET nombre = %s, apellido = %s, email = %s, telefono = %s, direccion = %s,
+                    fecha_nacimiento = %s
+                WHERE usuario_id = %s
+                ''',
+                (nombre, apellido, email, telefono, direccion, fecha_nacimiento, usuario_id)
+            )
+
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return jsonify({'mensaje': 'Usuario actualizado'}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/usuarios/<int:usuario_id>', methods=['DELETE'])
+def admin_usuarios_eliminar(usuario_id):
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True, buffered=True)
+
+        cursor.execute('SELECT usuario_id FROM Usuarios WHERE usuario_id = %s', (usuario_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+
+        cursor.execute('SELECT COUNT(*) AS total FROM usuario_reservas_vuelo WHERE usuario_id = %s', (usuario_id,))
+        total_reservas = cursor.fetchone().get('total', 0)
+        if total_reservas > 0:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'No se puede eliminar: el usuario tiene reservas asociadas'}), 409
+
+        cursor.execute('DELETE FROM Usuarios WHERE usuario_id = %s', (usuario_id,))
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return jsonify({'mensaje': 'Usuario eliminado'}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/reservas', methods=['GET'])
+def admin_reservas_listar():
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            '''
+            SELECT
+                urv.reserva_id,
+                urv.usuario_id,
+                CONCAT(u.nombre, ' ', u.apellido) AS pasajero,
+                u.email,
+                urv.vuelo_id,
+                v.codigo_vuelo,
+                ao.nombre AS origen,
+                ad.nombre AS destino,
+                urv.fecha_reserva,
+                urv.estado,
+                p.monto AS pago_monto,
+                p.metodo_pago AS pago_metodo,
+                p.estado_pago AS pago_estado
+            FROM usuario_reservas_vuelo urv
+            JOIN Usuarios u ON urv.usuario_id = u.usuario_id
+            JOIN vuelos v ON urv.vuelo_id = v.vuelo_id
+            JOIN aeropuertos ao ON v.aeropuerto_origen = ao.aeropuerto_id
+            JOIN aeropuertos ad ON v.aeropuerto_destino = ad.aeropuerto_id
+            LEFT JOIN pagos p ON urv.reserva_id = p.reserva_id
+            ORDER BY urv.fecha_reserva DESC
+            '''
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            if row.get('fecha_reserva') is not None and hasattr(row['fecha_reserva'], 'strftime'):
+                row['fecha_reserva'] = row['fecha_reserva'].strftime('%Y-%m-%d %H:%M:%S')
+
+        cursor.close()
+        connection.close()
+        return jsonify({'reservas': rows}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+@app.route('/admin/estadisticas', methods=['GET'])
+def admin_estadisticas():
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        schema_cursor = connection.cursor()
+        ensure_cancelaciones_table(schema_cursor)
+        schema_cursor.close()
+
+        cursor.execute(
+            '''
+            SELECT DATE_FORMAT(fecha_pago, '%%Y-%%m') AS mes, ROUND(SUM(monto), 2) AS total
+            FROM pagos
+            WHERE estado_pago = 'Confirmado'
+            GROUP BY DATE_FORMAT(fecha_pago, '%%Y-%%m')
+            ORDER BY mes DESC
+            LIMIT 12
+            '''
+        )
+        recaudacion_rows = cursor.fetchall()
+        recaudacion_rows.reverse()
+
+        cursor.execute('SELECT COUNT(*) AS total FROM usuario_reservas_vuelo')
+        reservados = cursor.fetchone().get('total', 0)
+
+        cursor.execute('SELECT COUNT(*) AS total FROM cancelaciones_reservas')
+        cancelados = cursor.fetchone().get('total', 0)
+
+        cursor.execute(
+            '''
+            SELECT ad.nombre AS destino, ad.provincia AS provincia, COUNT(*) AS cantidad
+            FROM usuario_reservas_vuelo urv
+            JOIN vuelos v ON urv.vuelo_id = v.vuelo_id
+            JOIN aeropuertos ad ON v.aeropuerto_destino = ad.aeropuerto_id
+            GROUP BY ad.aeropuerto_id, ad.nombre, ad.provincia
+            ORDER BY cantidad DESC
+            LIMIT 5
+            '''
+        )
+        destinos_rows = cursor.fetchall()
+
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'recaudacion_mensual': recaudacion_rows,
+            'vuelos_reservados': reservados,
+            'vuelos_cancelados': cancelados,
+            'destinos_mas_pedidos': destinos_rows,
+        }), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
         return jsonify({'error': 'Error en el servidor'}), 500
 
 if __name__ == '__main__':

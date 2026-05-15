@@ -22,6 +22,7 @@ export default function LoginForm({ onLoginSuccess }: LoginFormProps) {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [errores, setErrores] = useState({ email: '', password: '' });
 
   useEffect(() => {
     setEmail('');
@@ -30,8 +31,20 @@ export default function LoginForm({ onLoginSuccess }: LoginFormProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setError('');
+
+    const nuevosErrores = { email: '', password: '' };
+    const sqlPattern = /['";\\`<>=]/;
+    if (!email) nuevosErrores.email = 'El email es obligatorio.';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) nuevosErrores.email = 'Ingresa un email válido.';
+    else if (sqlPattern.test(email)) nuevosErrores.email = 'El email contiene caracteres no permitidos.';
+    if (!password) nuevosErrores.password = 'La contraseña es obligatoria.';
+    else if (password.length < 6) nuevosErrores.password = 'La contraseña debe tener al menos 6 caracteres.';
+    else if (sqlPattern.test(password)) nuevosErrores.password = 'La contraseña contiene caracteres no permitidos.';
+    setErrores(nuevosErrores);
+    if (nuevosErrores.email || nuevosErrores.password) return;
+
+    setLoading(true);
 
     try {
       const response = await fetch('http://localhost:5000/login', {
@@ -80,14 +93,15 @@ export default function LoginForm({ onLoginSuccess }: LoginFormProps) {
         </label>
         <input
           id="email"
-          type="email"
+          type="text"
           autoComplete="off"
           value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          onChange={(e) => { setEmail(e.target.value.replace(/['";<>\\`=]/g, '')); setErrores((prev) => ({ ...prev, email: '' })); }}
           required
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${errores.email ? 'border-red-500' : 'border-gray-300'}`}
           placeholder="tu@email.com"
         />
+        {errores.email && <p className="mt-1 text-sm text-red-600">{errores.email}</p>}
       </div>
 
       <div>
@@ -99,11 +113,12 @@ export default function LoginForm({ onLoginSuccess }: LoginFormProps) {
           type="password"
           autoComplete="new-password"
           value={password}
-          onChange={(e) => setPassword(e.target.value)}
+          onChange={(e) => { setPassword(e.target.value.replace(/['";<>\\`=]/g, '')); setErrores((prev) => ({ ...prev, password: '' })); }}
           required
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${errores.password ? 'border-red-500' : 'border-gray-300'}`}
           placeholder="••••••••"
         />
+        {errores.password && <p className="mt-1 text-sm text-red-600">{errores.password}</p>}
       </div>
 
       <button

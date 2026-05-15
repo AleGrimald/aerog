@@ -3,17 +3,24 @@
 import { useEffect, useState } from 'react';
 import AuthForm from '@/components/AuthForm';
 import Dashboard from '@/components/Dashboard';
+import AdminDashboard from '../components/AdminDashboard';
 
 interface Usuario {
   usuario_id: number;
   nombre: string;
   apellido: string;
   email: string;
+  es_admin?: boolean;
   telefono?: string;
   direccion?: string;
   fecha_nacimiento?: string;
   fecha_registro?: string;
 }
+
+const esUsuarioAdmin = (user: Usuario) => {
+  const email = (user.email || '').trim().toLowerCase();
+  return Boolean(user.es_admin) || email === 'admin@gmail.com';
+};
 
 export default function Home() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -41,6 +48,9 @@ export default function Home() {
   };
 
   if (usuario) {
+    if (esUsuarioAdmin(usuario)) {
+      return <AdminDashboard usuario={usuario} onLogout={handleLogout} />;
+    }
     return <Dashboard usuario={usuario} onLogout={handleLogout} />;
   }
 

@@ -18,9 +18,22 @@ export default function RegisterForm() {
   const [success, setSuccess] = useState('');
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    let filtered = value;
+
+    if (name === 'nombre' || name === 'apellido') {
+      filtered = value.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]/g, '');
+    } else if (name === 'telefono') {
+      filtered = value.replace(/[^0-9]/g, '');
+    } else if (name === 'direccion') {
+      filtered = value.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,#\-]/g, '');
+    } else if (name === 'password' || name === 'confirmPassword') {
+      filtered = value.replace(/['";\\`<>=]/g, '');
+    }
+
     setFormData({
       ...formData,
-      [e.target.name]: e.target.value,
+      [name]: filtered,
     });
   };
 
@@ -29,9 +42,34 @@ export default function RegisterForm() {
     setError('');
     setSuccess('');
 
+    const sqlPattern = /['";\\`<>=]/;
+    const soloLetras = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]+$/;
+    const soloNumeros = /^\d+$/;
+    const direccionValida = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,#\-]+$/;
+
+    if (!formData.nombre.trim() || !soloLetras.test(formData.nombre.trim()) || formData.nombre.trim().length < 2) {
+      setError('El nombre solo puede contener letras (mín. 2 caracteres).'); return;
+    }
+    if (!formData.apellido.trim() || !soloLetras.test(formData.apellido.trim()) || formData.apellido.trim().length < 2) {
+      setError('El apellido solo puede contener letras (mín. 2 caracteres).'); return;
+    }
+    if (!formData.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email) || sqlPattern.test(formData.email)) {
+      setError('Ingresa un email válido.'); return;
+    }
+    if (!formData.telefono || !soloNumeros.test(formData.telefono) || formData.telefono.length < 7 || formData.telefono.length > 15) {
+      setError('El teléfono debe contener solo dígitos (7-15).'); return;
+    }
+    if (!formData.direccion.trim() || !direccionValida.test(formData.direccion) || formData.direccion.trim().length < 5) {
+      setError('La dirección contiene caracteres no permitidos o es muy corta (mín. 5).'); return;
+    }
+    if (!formData.fecha_nacimiento) {
+      setError('La fecha de nacimiento es obligatoria.'); return;
+    }
+    if (!formData.password || formData.password.length < 6 || sqlPattern.test(formData.password)) {
+      setError('La contraseña debe tener al menos 6 caracteres y no contener caracteres no permitidos.'); return;
+    }
     if (formData.password !== formData.confirmPassword) {
-      setError('Las contraseñas no coinciden');
-      return;
+      setError('Las contraseñas no coinciden'); return;
     }
 
     setLoading(true);

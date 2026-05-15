@@ -87,8 +87,18 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
     };
   };
 
+
+
   const handleTitularChange = (campo: keyof DatosTitular, valor: string) => {
-    setDatosTitular((prev) => ({ ...prev, [campo]: valor }));
+    let filtered = valor;
+    if (campo === 'nombre' || campo === 'apellido') {
+      filtered = valor.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]/g, '');
+    } else if (campo === 'telefono') {
+      filtered = valor.replace(/[^0-9]/g, '');
+    } else if (campo === 'direccion') {
+      filtered = valor.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,#\-]/g, '');
+    }
+    setDatosTitular((prev) => ({ ...prev, [campo]: filtered }));
   };
 
   const abrirModalPasajero = () => {
@@ -120,7 +130,17 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
   };
 
   const handleNuevoPasajeroChange = (campo: keyof NuevoPasajeroForm, valor: string) => {
-    setNuevoPasajero((prev) => ({ ...prev, [campo]: valor }));
+    let filtered = valor;
+    if (campo === 'nombre' || campo === 'apellido') {
+      filtered = valor.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]/g, '');
+    } else if (campo === 'telefono') {
+      filtered = valor.replace(/[^0-9]/g, '');
+    } else if (campo === 'direccion') {
+      filtered = valor.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,#\-]/g, '');
+    } else if (campo === 'password') {
+      filtered = valor.replace(/['";\\`<>=]/g, '');
+    }
+    setNuevoPasajero((prev) => ({ ...prev, [campo]: filtered }));
   };
 
   const handlePasajeroAdicionalChange = (
@@ -128,11 +148,19 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
     campo: keyof Omit<PasajeroRegistrado, 'usuario_id'>,
     valor: string
   ) => {
+    let filtered = valor;
+    if (campo === 'nombre' || campo === 'apellido') {
+      filtered = valor.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]/g, '');
+    } else if (campo === 'telefono') {
+      filtered = valor.replace(/[^0-9]/g, '');
+    } else if (campo === 'direccion') {
+      filtered = valor.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,#\-]/g, '');
+    }
     setPasajerosAdicionales((prev) => {
       const updated = [...prev];
       updated[index] = {
         ...updated[index],
-        [campo]: valor,
+        [campo]: filtered,
       };
       return updated;
     });
@@ -140,8 +168,36 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
 
   const handleGuardarPasajero = async (e: React.FormEvent) => {
     e.preventDefault();
-    setGuardandoPasajero(true);
     setModalError('');
+
+    const sqlPattern = /['";\\`<>=]/;
+    const soloLetras = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]+$/;
+    const soloNumeros = /^\d+$/;
+    const direccionValida = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,#\-]+$/;
+
+    if (!nuevoPasajero.nombre.trim() || nuevoPasajero.nombre.trim().length < 2 || !soloLetras.test(nuevoPasajero.nombre.trim())) {
+      setModalError('El nombre solo puede contener letras (mín. 2 caracteres).'); return;
+    }
+    if (!nuevoPasajero.apellido.trim() || nuevoPasajero.apellido.trim().length < 2 || !soloLetras.test(nuevoPasajero.apellido.trim())) {
+      setModalError('El apellido solo puede contener letras (mín. 2 caracteres).'); return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nuevoPasajero.email) || sqlPattern.test(nuevoPasajero.email)) {
+      setModalError('Ingresa un email válido.'); return;
+    }
+    if (!soloNumeros.test(nuevoPasajero.telefono) || nuevoPasajero.telefono.length < 7 || nuevoPasajero.telefono.length > 15) {
+      setModalError('El teléfono debe contener solo dígitos (7-15).'); return;
+    }
+    if (!nuevoPasajero.direccion.trim() || !direccionValida.test(nuevoPasajero.direccion) || nuevoPasajero.direccion.trim().length < 5) {
+      setModalError('La dirección contiene caracteres no permitidos o es muy corta (mín. 5).'); return;
+    }
+    if (!nuevoPasajero.fecha_nacimiento) {
+      setModalError('La fecha de nacimiento es obligatoria.'); return;
+    }
+    if (!nuevoPasajero.password || nuevoPasajero.password.length < 6 || sqlPattern.test(nuevoPasajero.password)) {
+      setModalError('La contraseña debe tener al menos 6 caracteres y no puede contener caracteres no permitidos.'); return;
+    }
+
+    setGuardandoPasajero(true);
 
     try {
       const response = await fetch('http://localhost:5000/register', {
@@ -194,6 +250,28 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
 
   // Paso 1: Modal de confirmación de pago
   const handleConfirmar = () => {
+    const sqlPattern = /['";\\`<>=]/;
+    const soloLetras = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]+$/;
+    const soloNumeros = /^\d+$/;
+    const direccionValida = /^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ0-9\s.,#\-]+$/;
+    const errs: string[] = [];
+
+    if (!datosTitular.nombre.trim() || datosTitular.nombre.trim().length < 2 || !soloLetras.test(datosTitular.nombre.trim()))
+      errs.push('El nombre solo puede contener letras (mín. 2 caracteres).');
+    if (!datosTitular.apellido.trim() || datosTitular.apellido.trim().length < 2 || !soloLetras.test(datosTitular.apellido.trim()))
+      errs.push('El apellido solo puede contener letras (mín. 2 caracteres).');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(datosTitular.email) || sqlPattern.test(datosTitular.email))
+      errs.push('Email del pasajero principal inválido.');
+    if (!soloNumeros.test(datosTitular.telefono) || datosTitular.telefono.length < 7 || datosTitular.telefono.length > 15)
+      errs.push('El teléfono debe contener solo dígitos (7-15).');
+    if (!datosTitular.direccion.trim() || !direccionValida.test(datosTitular.direccion) || datosTitular.direccion.trim().length < 5)
+      errs.push('La dirección contiene caracteres no permitidos o es muy corta (mín. 5).');
+
+    if (errs.length > 0) {
+      setMensajeReserva({ tipo: 'error', texto: errs.join(' ') });
+      return;
+    }
+    setMensajeReserva({ tipo: '', texto: '' });
     setShowPagoModal(true);
   };
 
@@ -504,6 +582,8 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
         </div>
       </div>
     )}
+
+
     <div className="space-y-6">
       {/* Datos del Vuelo - NO EDITABLE */}
       <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 shadow-sm">
@@ -594,6 +674,7 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
               className="mt-2 w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 focus:border-blue-500 focus:outline-none"
             />
           </div>
+          
         </div>
       </div>
 
