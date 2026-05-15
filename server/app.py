@@ -20,7 +20,7 @@ load_dotenv()
 # Detectar entorno
 ENV = os.environ.get('ENV', 'development').lower()
 
-if ENV == 'production':
+if ENV == 'development':
     MY_SQL_HOST = os.environ.get('MYSQL_ADDON_HOST', 'blm5x9oepuyj2mg73vdk-mysql.services.clever-cloud.com')
     MY_SQL_USER = os.environ.get('MYSQL_ADDON_USER', 'urmow4dfpnsddjqz')
     MY_SQL_PASS = os.environ.get('MYSQL_ADDON_PASSWORD', '5xet9ohmSY9r4KYf5HYR')
@@ -38,7 +38,13 @@ PORT = int(os.environ.get('PORT', 5000))
 app = Flask(__name__)
 CORS(app, resources={
     r"/*": {
-        "origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.40.226:3000"],
+        "origins": [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://192.168.40.226:3000",
+            "https://aerog-cliente.vercel.app",
+            "https://aerog.vercel.app",
+        ],
         "methods": ["GET", "POST", "OPTIONS", "DELETE", "PUT"],
         "allow_headers": ["Content-Type"],
     }
@@ -228,21 +234,6 @@ def ensure_vuelos_asientos_column(cursor):
             '''
         )
 
-def ensure_reservas_asiento_column(cursor):
-    """Asegura la columna numero_asiento en usuario_reservas_vuelo."""
-    cursor.execute(
-        '''
-        SELECT COLUMN_NAME
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'usuario_reservas_vuelo'
-        ''',
-        (MY_SQL_DB,)
-    )
-    columnas = {row[0] for row in cursor.fetchall()}
-
-    if 'numero_asiento' not in columnas:
-        cursor.execute('ALTER TABLE usuario_reservas_vuelo ADD COLUMN numero_asiento VARCHAR(10) NULL')
-
 def ensure_cancelaciones_table(cursor):
     """Asegura tabla para auditar cancelaciones de reservas."""
     cursor.execute(
@@ -345,35 +336,6 @@ def airport_suggestions():
         })
 
     return jsonify(normalized)
-
-@app.route('/asientos-ocupados/<int:vuelo_id>', methods=['GET'])
-def asientos_ocupados(vuelo_id):
-    """Devuelve números de asiento ocupados para un vuelo."""
-    try:
-        connection = get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        schema_cursor = connection.cursor()
-        ensure_reservas_asiento_column(schema_cursor)
-        schema_cursor.close()
-
-        cursor.execute(
-            '''
-            SELECT numero_asiento
-            FROM usuario_reservas_vuelo
-            WHERE vuelo_id = %s AND numero_asiento IS NOT NULL AND TRIM(numero_asiento) <> ''
-            ''',
-            (vuelo_id,)
-        )
-        rows = cursor.fetchall()
-        ocupados = [row['numero_asiento'] for row in rows if row.get('numero_asiento')]
-
-        cursor.close()
-        connection.close()
-        return jsonify({'ocupados': ocupados}), 200
-    except Error as exc:
-        return jsonify({'error': str(exc)}), 500
-    except Exception:
-        return jsonify({'error': 'Error en el servidor'}), 500
 
 @app.route('/buscar-vuelos', methods=['POST'])
 def buscar_vuelos():
@@ -620,7 +582,6 @@ def confirmar_reserva():
 
         schema_cursor = connection.cursor()
         ensure_vuelos_asientos_column(schema_cursor)
-        ensure_reservas_asiento_column(schema_cursor)
         schema_cursor.close()
 
         asientos_solicitados = len(todos_usuarios)
@@ -643,8 +604,8 @@ def confirmar_reserva():
         reserva_ids = []
         for usuario_id in todos_usuarios:
             cursor.execute('''
-                INSERT INTO usuario_reservas_vuelo (usuario_id, vuelo_id, fecha_reserva, estado, numero_asiento)
-                VALUES (%s, %s, %s, %s, NULL)
+                INSERT INTO usuario_reservas_vuelo (usuario_id, vuelo_id, fecha_reserva, estado)
+                VALUES (%s, %s, %s, %s)
             ''', (usuario_id, vuelo_id, fecha_reserva, estado_reserva))
             reserva_ids.append(cursor.lastrowid)
 
@@ -682,7 +643,6 @@ def mis_reservas(usuario_id):
                 urv.vuelo_id,
                 urv.fecha_reserva,
                 urv.estado,
-                urv.numero_asiento,
                 vd.codigo_vuelo,
                 vd.fecha_salida,
                 vd.fecha_llegada,
@@ -961,7 +921,6 @@ def pagar_reserva():
         cursor = connection.cursor(dictionary=True, buffered=True)
         schema_cursor = connection.cursor()
         ensure_pagos_columns(schema_cursor)
-        ensure_reservas_asiento_column(schema_cursor)
         schema_cursor.close()
 
         # Obtener datos de la tarjeta para validar y recuperar ultimos 4
