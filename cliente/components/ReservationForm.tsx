@@ -57,9 +57,15 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
   const [showFormaPagoModal, setShowFormaPagoModal] = useState(false);
   const [tarjetasGuardadas, setTarjetasGuardadas] = useState<any[]>([]);
   const [tarjetaSeleccionada, setTarjetaSeleccionada] = useState<any>(null);
-  const [tipoPago, setTipoPago] = useState<'debito' | 'credito' | null>(null);
+  const [tipoPago, setTipoPago] = useState<'debito' | 'credito' | 'mercadopago_qr' | null>(null);
   const [cuotas, setCuotas] = useState(1);
   const [mensajeReserva, setMensajeReserva] = useState({ tipo: '', texto: '' });
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [qrCheckoutUrl, setQrCheckoutUrl] = useState('');
+  const [qrReservaId, setQrReservaId] = useState<number | null>(null);
+  const [verificandoQr, setVerificandoQr] = useState(false);
+  const [cvvPago, setCvvPago] = useState('');
+  const [cvvError, setCvvError] = useState('');
   const [nuevoPasajero, setNuevoPasajero] = useState<NuevoPasajeroForm>({
     nombre: '',
     apellido: '',
@@ -324,6 +330,8 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
   // Paso 3: Selección de tarjeta y forma de pago
   const handleSeleccionarTarjeta = (tarjeta: any) => {
     setTarjetaSeleccionada(tarjeta);
+    setCvvPago('');
+    setCvvError('');
     // Auto-detectar tipo de pago desde tipo_tarjeta de la BD
     const tipo = (tarjeta.tipo_tarjeta || '').toLowerCase();
     if (tipo === 'debito') {
@@ -334,23 +342,78 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
       setCuotas(1);
     }
   };
-  const handleSeleccionarTipoPago = (tipo: 'debito' | 'credito') => {
+  const handleSeleccionarTipoPago = (tipo: 'debito' | 'credito' | 'mercadopago_qr') => {
     setTipoPago(tipo);
+    if (tipo === 'mercadopago_qr') {
+      setTarjetaSeleccionada(null);
+      setCvvPago('');
+      setCvvError('');
+    }
     setCuotas(1);
   };
   const handleSeleccionarCuotas = (n: number) => {
     setCuotas(n);
   };
+
+  const qrImageUrl = qrCheckoutUrl
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrCheckoutUrl)}`
+    : '';
+
+  const handleVerificarPagoQr = async () => {
+    if (!qrReservaId) return;
+    try {
+      setVerificandoQr(true);
+      const response = await fetch(`${API_BASE_URL}/verificar-pago-qr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reserva_id: qrReservaId }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMensajeReserva({ tipo: 'error', texto: data.error || 'No se pudo verificar el pago QR.' });
+        return;
+      }
+
+      if (data.estado === 'confirmado') {
+        setMensajeReserva({ tipo: 'exito', texto: 'Pago QR confirmado. Reserva actualizada.' });
+        setShowQrModal(false);
+        setQrCheckoutUrl('');
+        setQrReservaId(null);
+        if (onReservaConfirmada) {
+          setTimeout(() => { onReservaConfirmada(); }, 1200);
+        }
+        return;
+      }
+
+      if (data.estado === 'pendiente') {
+        setMensajeReserva({ tipo: 'error', texto: 'El pago sigue pendiente en Mercado Pago.' });
+        return;
+      }
+
+      setMensajeReserva({ tipo: 'error', texto: data.mensaje || 'El pago aún no fue aprobado.' });
+    } catch {
+      setMensajeReserva({ tipo: 'error', texto: 'No se pudo conectar con el servidor para verificar el pago.' });
+    } finally {
+      setVerificandoQr(false);
+    }
+  };
+
   const handleConfirmarPago = async () => {
+    if (tipoPago !== 'mercadopago_qr') {
+      if (!tarjetaSeleccionada) {
+        setMensajeReserva({ tipo: 'error', texto: 'Selecciona una tarjeta para continuar.' });
+        return;
+      }
+      if (!/^\d{3,4}$/.test(cvvPago)) {
+        setCvvError('Completa el CVV (3 o 4 dígitos).');
+        setMensajeReserva({ tipo: 'error', texto: 'Ingresa un CVV válido (3 o 4 dígitos).' });
+        return;
+      }
+      setCvvError('');
+    }
+
     setShowFormaPagoModal(false);
-    setShowConfirmingModal(true);
-    setShowCheckmark(false);
     setMensajeReserva({ tipo: '', texto: '' });
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    setShowCheckmark(true);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setShowConfirmingModal(false);
-    setShowCheckmark(false);
     setConfirmandoReserva(true);
     try {
       const pasajeros_adicionales_ids = pasajerosAdicionales.map((p) => p.usuario_id);
@@ -376,10 +439,58 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
       const reserva_id = dataReserva.reserva_ids[0]; // Usar el ID del pasajero principal
       
       // Paso 2: Registrar el pago
+      if (tipoPago === 'mercadopago_qr') {
+        const responsePagoQr = await fetch(`${API_BASE_URL}/crear-pago-qr`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reserva_id,
+            usuario_email: datosTitular.email || usuario.email,
+          }),
+        });
+        const rawPagoQr = await responsePagoQr.text();
+        let dataPagoQr: any = {};
+        if (rawPagoQr) {
+          try {
+            dataPagoQr = JSON.parse(rawPagoQr);
+          } catch {
+            dataPagoQr = {};
+          }
+        }
+        if (!responsePagoQr.ok) {
+          setMensajeReserva({
+            tipo: 'error',
+            texto: dataPagoQr.error || `No se pudo generar el pago QR (HTTP ${responsePagoQr.status}).`,
+          });
+          return;
+        }
+
+        if (dataPagoQr.checkout_url) {
+          setQrCheckoutUrl(dataPagoQr.checkout_url);
+          setQrReservaId(reserva_id);
+          setShowQrModal(true);
+        }
+
+        setMensajeReserva({
+          tipo: 'exito',
+          texto: 'Reserva creada en estado pendiente. Escanea el QR para pagar y luego verifica el estado.',
+        });
+        return;
+      }
+
+      setShowConfirmingModal(true);
+      setShowCheckmark(false);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      setShowCheckmark(true);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      setShowConfirmingModal(false);
+      setShowCheckmark(false);
+
       const payloadPago = {
         reserva_id: reserva_id,
         tarjeta_id: tarjetaSeleccionada?.tarjeta_id,
         tipo: tipoPago,
+        cvv: cvvPago,
         cuotas: tipoPago === 'credito' ? cuotas : 1,
       };
       const responsePago = await fetch(`${API_BASE_URL}/pagar-reserva`, {
@@ -397,7 +508,8 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
       if (onReservaConfirmada) {
         setTimeout(() => { onReservaConfirmada(); }, 2000);
       }
-    } catch {
+    } catch (err) {
+      console.error('Error al confirmar pago/reserva:', err);
       setMensajeReserva({ tipo: 'error', texto: 'No se pudo conectar con el servidor.' });
     } finally {
       setConfirmandoReserva(false);
@@ -408,26 +520,26 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
     <>
     {/* Modal: ¿Quiere realizar el pago ahora? */}
     {showPagoModal && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-        <div className="w-full max-w-md rounded-3xl bg-white p-8 shadow-xl">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-6 shadow-xl sm:p-8">
           <h3 className="text-xl font-bold text-slate-900 mb-4">¿Quiere realizar el pago ahora?</h3>
           <p className="mb-6 text-slate-700">Puedes pagar ahora con tarjeta o dejar la reserva pendiente de pago.</p>
-          <div className="flex justify-end gap-3">
+          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <button
               onClick={() => setShowPagoModal(false)}
-              className="rounded-full bg-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-300"
+              className="w-full rounded-full bg-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-300 sm:w-auto"
             >
               Cancelar
             </button>
             <button
               onClick={handlePagarMasTarde}
-              className="rounded-full bg-yellow-500 px-5 py-3 text-sm font-semibold text-white hover:bg-yellow-600"
+              className="w-full rounded-full bg-yellow-500 px-5 py-3 text-sm font-semibold text-white hover:bg-yellow-600 sm:w-auto"
             >
               Pagar más tarde
             </button>
             <button
               onClick={handlePagoAhora}
-              className="rounded-full bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+              className="w-full rounded-full bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 sm:w-auto"
             >
               Pagar ahora
             </button>
@@ -438,8 +550,8 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
 
     {/* Modal: Selección de tarjeta y forma de pago */}
     {showFormaPagoModal && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-        <div className="w-full max-w-lg rounded-3xl bg-white p-8 shadow-xl">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl bg-white p-6 shadow-xl sm:p-8">
           <h3 className="text-xl font-bold text-slate-900 mb-4">Selecciona tarjeta y forma de pago</h3>
           <div className="mb-4">
             <p className="mb-2 text-slate-700 font-semibold">Tarjetas guardadas:</p>
@@ -451,7 +563,7 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
                   <button
                     key={t.tarjeta_id}
                     onClick={() => handleSeleccionarTarjeta(t)}
-                    className={`w-full flex items-center justify-between rounded-xl border px-4 py-3 ${tarjetaSeleccionada?.tarjeta_id === t.tarjeta_id ? 'border-blue-600 bg-blue-50' : 'border-slate-200 bg-slate-50'} hover:border-blue-400`}
+                    className={`flex w-full flex-col items-start gap-1 rounded-xl border px-4 py-3 text-left sm:flex-row sm:items-center sm:justify-between ${tarjetaSeleccionada?.tarjeta_id === t.tarjeta_id ? 'border-blue-600 bg-blue-50' : 'border-slate-200 bg-slate-50'} hover:border-blue-400`}
                   >
                     <span>{t.marca} - {t.titular} ****{t.ultimos4}</span>
                     {tarjetaSeleccionada?.tarjeta_id === t.tarjeta_id && <span className="ml-2 text-blue-600 font-bold">Seleccionada</span>}
@@ -460,9 +572,35 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
               </div>
             )}
           </div>
-          {tarjetaSeleccionada && tipoPago && (
+          <div className="mb-4">
+            <p className="mb-2 text-slate-700 font-semibold">Otras formas de pago:</p>
+            <button
+              onClick={() => handleSeleccionarTipoPago('mercadopago_qr')}
+              className={`w-full rounded-xl border px-4 py-3 text-left ${tipoPago === 'mercadopago_qr' ? 'border-blue-600 bg-blue-50' : 'border-slate-200 bg-slate-50'} hover:border-blue-400`}
+            >
+              Mercado Pago QR
+            </button>
+          </div>
+
+          {tipoPago && tipoPago !== 'mercadopago_qr' && tarjetaSeleccionada && (
             <div className="mb-4">
               <p className="mb-2 text-slate-700 font-semibold">Tipo de Pago: <span className="text-blue-600">{tipoPago === 'debito' ? 'Débito' : 'Crédito'}</span></p>
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-slate-700 mb-1">CVV:</label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={cvvPago}
+                  onChange={(e) => {
+                    setCvvPago(e.target.value.replace(/[^0-9]/g, ''));
+                    setCvvError('');
+                  }}
+                  placeholder="***"
+                  className={`w-full rounded-xl border px-3 py-2 ${cvvError ? 'border-red-500 bg-red-50' : 'border-slate-300'}`}
+                />
+                {cvvError && <p className="mt-1 text-xs text-red-600">{cvvError}</p>}
+              </div>
               {tipoPago === 'credito' && (
                 <div className="mt-3">
                   <label className="block text-sm font-medium text-slate-700 mb-1">Cuotas:</label>
@@ -482,7 +620,18 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
           {tipoPago && (
             <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-sm font-semibold text-slate-900 mb-3">Resumen de Pago</p>
-              {tipoPago === 'debito' ? (
+              {tipoPago === 'mercadopago_qr' ? (
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Método:</span>
+                    <span className="font-semibold text-slate-900">Mercado Pago QR</span>
+                  </div>
+                  <div className="border-t border-slate-300 pt-2 flex justify-between">
+                    <span className="font-semibold text-slate-900">Total a Pagar:</span>
+                    <span className="font-bold text-blue-600">${calcularResumenPago().subtotal}</span>
+                  </div>
+                </div>
+              ) : tipoPago === 'debito' ? (
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
                     <span className="text-slate-600">Monto a Pagar:</span>
@@ -528,10 +677,49 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
             </button>
             <button
               onClick={handleConfirmarPago}
-              disabled={!tarjetaSeleccionada || !tipoPago}
+              disabled={!tipoPago || (tipoPago !== 'mercadopago_qr' && !tarjetaSeleccionada)}
               className="rounded-full bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
             >
               Confirmar y pagar
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showQrModal && qrCheckoutUrl && (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+        <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+          <h3 className="text-xl font-bold text-slate-900">Pagar con Mercado Pago QR</h3>
+          <p className="mt-2 text-sm text-slate-600">Escaneá este código con la app de Mercado Pago para completar el pago.</p>
+
+          <div className="mt-4 flex justify-center rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <img src={qrImageUrl} alt="QR Mercado Pago" className="h-72 w-72 max-w-full" />
+          </div>
+
+          <div className="mt-4 flex flex-col gap-2">
+            <button
+              onClick={handleVerificarPagoQr}
+              disabled={verificandoQr}
+              className="w-full rounded-full bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {verificandoQr ? 'Verificando...' : 'Verificar pago QR'}
+            </button>
+            <button
+              onClick={() => window.open(qrCheckoutUrl, '_blank', 'noopener,noreferrer')}
+              className="w-full rounded-full bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+            >
+              Abrir checkout de Mercado Pago
+            </button>
+            <button
+              onClick={() => {
+                setShowQrModal(false);
+                setQrCheckoutUrl('');
+                setQrReservaId(null);
+              }}
+              className="w-full rounded-full bg-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-300"
+            >
+              Cerrar
             </button>
           </div>
         </div>
@@ -587,8 +775,8 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
 
     <div className="space-y-6">
       {/* Datos del Vuelo - NO EDITABLE */}
-      <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6 shadow-sm">
-        <h2 className="text-2xl font-bold text-slate-900">Datos del Vuelo</h2>
+      <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5 shadow-sm sm:p-6">
+        <h2 className="text-xl font-bold text-slate-900 sm:text-2xl">Datos del Vuelo</h2>
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           <div>
             <p className="text-sm font-medium text-slate-600">Código de Vuelo</p>
@@ -627,8 +815,8 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
       </div>
 
       {/* Datos del Pasajero Principal */}
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-2xl font-bold text-slate-900">Pasajero Principal</h2>
+      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <h2 className="text-xl font-bold text-slate-900 sm:text-2xl">Pasajero Principal</h2>
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           <div>
             <label className="block text-sm font-medium text-slate-700">Nombre</label>
@@ -682,8 +870,8 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
       {/* Datos de Pasajeros Adicionales */}
       {maxPasajerosAdicionales > 0 && (
         <div className="space-y-4">
-          <h2 className="text-2xl font-bold text-slate-900">Pasajeros Adicionales</h2>
-          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-bold text-slate-900 sm:text-2xl">Pasajeros Adicionales</h2>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
             <p className="text-sm text-slate-600">
               Registrados: {pasajerosAdicionales.length} / {maxPasajerosAdicionales}
             </p>
@@ -692,7 +880,7 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
               <button
                 type="button"
                 onClick={abrirModalPasajero}
-                className="mt-4 rounded-full bg-blue-600 px-6 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                className="mt-4 w-full rounded-full bg-blue-600 px-6 py-3 text-sm font-semibold text-white hover:bg-blue-700 sm:w-auto"
               >
                 Agregar pasajero
               </button>
@@ -764,7 +952,7 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
           <button
             onClick={handleConfirmar}
             disabled={confirmandoReserva}
-            className="flex-1 rounded-3xl bg-blue-600 px-6 py-4 text-base font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full rounded-3xl bg-blue-600 px-6 py-4 text-base font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {confirmandoReserva ? 'Confirmando...' : 'Confirmar Reserva'}
           </button>
@@ -785,13 +973,13 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
 
       {mostrarModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-xl">
-            <div className="mb-4 flex items-center justify-between">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-5 shadow-xl sm:p-6">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <h3 className="text-xl font-bold text-slate-900">Registrar pasajero adicional</h3>
               <button
                 type="button"
                 onClick={cerrarModalPasajero}
-                className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 hover:bg-slate-200"
+                className="w-full rounded-full bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 sm:w-auto"
               >
                 Cerrar
               </button>
@@ -875,18 +1063,18 @@ export default function ReservationForm({ vuelo, usuario, cantidadPasajeros, onR
                 </div>
               )}
 
-              <div className="md:col-span-2 flex justify-end gap-3">
+              <div className="md:col-span-2 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
                 <button
                   type="button"
                   onClick={cerrarModalPasajero}
-                  className="rounded-full bg-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-300"
+                  className="w-full rounded-full bg-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-300 sm:w-auto"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={guardandoPasajero}
-                  className="rounded-full bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="w-full rounded-full bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                 >
                   {guardandoPasajero ? 'Guardando...' : 'Guardar pasajero'}
                 </button>

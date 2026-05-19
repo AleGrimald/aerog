@@ -1,9 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { API_BASE_URL } from '@/constants/api';
 
-export default function RegisterForm() {
+interface RegisterFormProps {
+  onRegisterSuccess: () => void;
+}
+
+export default function RegisterForm({ onRegisterSuccess }: RegisterFormProps) {
   const [formData, setFormData] = useState({
     nombre: '',
     apellido: '',
@@ -17,6 +21,25 @@ export default function RegisterForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const modalTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (modalTimerRef.current) {
+        window.clearTimeout(modalTimerRef.current);
+      }
+    };
+  }, []);
+
+  const closeSuccessModal = () => {
+    if (modalTimerRef.current) {
+      window.clearTimeout(modalTimerRef.current);
+      modalTimerRef.current = null;
+    }
+    setShowSuccessModal(false);
+    onRegisterSuccess();
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -95,7 +118,7 @@ export default function RegisterForm() {
       const result = await response.json();
 
       if (response.ok) {
-        setSuccess('Registro exitoso. Ahora inicia sesión.');
+        setSuccess('Registro exitoso.');
         setFormData({
           nombre: '',
           apellido: '',
@@ -106,6 +129,10 @@ export default function RegisterForm() {
           password: '',
           confirmPassword: '',
         });
+        setShowSuccessModal(true);
+        modalTimerRef.current = window.setTimeout(() => {
+          closeSuccessModal();
+        }, 7000);
       } else {
         setError(result.error || 'Error al registrarse');
       }
@@ -118,22 +145,23 @@ export default function RegisterForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <h2 className="text-2xl font-bold text-gray-800 mb-6">Crear Cuenta</h2>
+    <>
+      <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-5">
+        <h2 className="mb-5 text-xl font-bold text-gray-800 sm:mb-6 sm:text-2xl">Crear Cuenta</h2>
 
       {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+        <div className="rounded-lg border border-red-400 bg-red-100 px-4 py-3 text-sm text-red-700 sm:text-base">
           {error}
         </div>
       )}
 
       {success && (
-        <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded">
+        <div className="rounded-lg border border-green-400 bg-green-100 px-4 py-3 text-sm text-green-700 sm:text-base">
           {success}
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
           <label htmlFor="nombre" className="block text-sm font-medium text-gray-700 mb-2">
             Nombre
@@ -145,7 +173,7 @@ export default function RegisterForm() {
             value={formData.nombre}
             onChange={handleChange}
             required
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="Juan"
           />
         </div>
@@ -160,7 +188,7 @@ export default function RegisterForm() {
             value={formData.apellido}
             onChange={handleChange}
             required
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="Pérez"
           />
         </div>
@@ -177,7 +205,7 @@ export default function RegisterForm() {
           value={formData.email}
           onChange={handleChange}
           required
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="tu@email.com"
         />
       </div>
@@ -193,7 +221,7 @@ export default function RegisterForm() {
           value={formData.telefono}
           onChange={handleChange}
           required
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="123456789"
         />
       </div>
@@ -209,7 +237,7 @@ export default function RegisterForm() {
           value={formData.direccion}
           onChange={handleChange}
           required
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="Av. Siempre Viva 123"
         />
       </div>
@@ -225,7 +253,7 @@ export default function RegisterForm() {
           value={formData.fecha_nacimiento}
           onChange={handleChange}
           required
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
 
@@ -240,7 +268,7 @@ export default function RegisterForm() {
           value={formData.password}
           onChange={handleChange}
           required
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="••••••••"
         />
       </div>
@@ -256,19 +284,41 @@ export default function RegisterForm() {
           value={formData.confirmPassword}
           onChange={handleChange}
           required
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="••••••••"
         />
       </div>
 
-      <button
-        type="submit"
-        disabled={loading}
-        className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-semibold py-2 px-4 rounded-lg transition duration-200"
-      >
-        {loading ? 'Registrando...' : 'Crear Cuenta'}
-      </button>
-    </form>
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full rounded-lg bg-blue-600 px-4 py-3 text-base font-semibold text-white transition duration-200 hover:bg-blue-700 disabled:bg-blue-400"
+        >
+          {loading ? 'Registrando...' : 'Crear Cuenta'}
+        </button>
+      </form>
+
+      {showSuccessModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <h3 className="text-xl font-bold text-gray-800">Cuenta creada con éxito</h3>
+            <p className="mt-3 text-sm text-gray-600 sm:text-base">
+              Te enviamos un email para confirmar tu cuenta. Revisa tu bandeja de entrada.
+            </p>
+            <p className="mt-2 text-xs text-gray-500 sm:text-sm">Esta ventana se cerrará automáticamente en 7 segundos.</p>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={closeSuccessModal}
+                className="rounded-lg bg-blue-600 px-5 py-2 font-semibold text-white transition hover:bg-blue-700"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
