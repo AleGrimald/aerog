@@ -7,6 +7,7 @@ DROP PROCEDURE IF EXISTS sp_reservations_obtener_reserva;
 DROP PROCEDURE IF EXISTS sp_reservations_insert_cancelacion;
 DROP PROCEDURE IF EXISTS sp_reservations_delete_pago;
 DROP PROCEDURE IF EXISTS sp_reservations_delete_reserva;
+DROP PROCEDURE IF EXISTS sp_reservations_sumar_asientos;
 DROP PROCEDURE IF EXISTS sp_reservations_sumar_asiento;
 
 DELIMITER $$
@@ -123,12 +124,22 @@ BEGIN
 END$$
 
 -- Original:
--- UPDATE vuelos SET asientos_disponibles = asientos_disponibles + 1 WHERE vuelo_id = ?;
-CREATE PROCEDURE sp_reservations_sumar_asiento(IN p_vuelo_id INT)
+-- UPDATE vuelos SET asientos_disponibles = asientos_disponibles + ? WHERE vuelo_id = ?;
+CREATE PROCEDURE sp_reservations_sumar_asientos(
+    IN p_vuelo_id INT,
+    IN p_asientos INT
+)
 BEGIN
     UPDATE vuelos
-    SET asientos_disponibles = asientos_disponibles + 1
-    WHERE vuelo_id = p_vuelo_id;
+    SET asientos_disponibles = asientos_disponibles + p_asientos
+    WHERE vuelo_id = p_vuelo_id
+      AND p_asientos >= 1;
+END$$
+
+-- Compatibilidad hacia atrás: suma 1 asiento.
+CREATE PROCEDURE sp_reservations_sumar_asiento(IN p_vuelo_id INT)
+BEGIN
+    CALL sp_reservations_sumar_asientos(p_vuelo_id, 1);
 END$$
 
 DELIMITER ;

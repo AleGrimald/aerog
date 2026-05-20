@@ -1,5 +1,5 @@
 """Blueprint de búsqueda de vuelos"""
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Blueprint, request, jsonify
 from mysql.connector import Error
 
@@ -105,11 +105,8 @@ def buscar_vuelos():
             return jsonify({'error': 'La fecha de salida debe ser hoy o posterior'}), 400
 
         if trip_type == 'one-way':
-            start_date = selected_salida - timedelta(days=5)
+            start_date = selected_salida
             end_date = datetime.strptime('9999-12-31', '%Y-%m-%d').date()
-            
-            if start_date < today:
-                start_date = today
         else:
             start_date = selected_salida
             end_date = selected_regreso
@@ -121,6 +118,9 @@ def buscar_vuelos():
 
             cursor.execute('CALL sp_flights_buscar_vuelos(%s, %s, %s, %s, %s)', params_search)
             results = cursor.fetchall()
+
+            # Filtro defensivo por si la BD tiene un SP desactualizado sin condición de asientos.
+            results = [r for r in results if int(r.get('asientos_disponibles') or 0) >= pasajeros]
 
             print('SP SEARCH: sp_flights_buscar_vuelos')
             print('PARAMS SEARCH:', params_search)

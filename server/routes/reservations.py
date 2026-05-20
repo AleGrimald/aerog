@@ -184,6 +184,15 @@ def mis_reservas(usuario_id):
 def cancelar_reserva(reserva_id):
     """Elimina una reserva y su pago asociado"""
     try:
+        data = request.get_json(silent=True) or {}
+        cantidad_pasajeros = data.get('cantidad_pasajeros', 1)
+        try:
+            cantidad_pasajeros = int(cantidad_pasajeros)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'cantidad_pasajeros inválida'}), 400
+        if cantidad_pasajeros < 1:
+            return jsonify({'error': 'cantidad_pasajeros debe ser mayor o igual a 1'}), 400
+
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True, buffered=True)
 
@@ -211,8 +220,25 @@ def cancelar_reserva(reserva_id):
         _drain_call_results(cursor)
 
         if int(delete_result.get('affected_rows') or 0) > 0:
-            cursor.execute('CALL sp_reservations_sumar_asiento(%s)', (vuelo_id,))
-            _drain_call_results(cursor)
+            usar_fallback_sql = False
+            try:
+                cursor.execute('CALL sp_reservations_sumar_asientos(%s, %s)', (vuelo_id, cantidad_pasajeros))
+                _drain_call_results(cursor)
+            except Error as exc:
+                if _sp_missing(exc):
+                    usar_fallback_sql = True
+                else:
+                    raise
+
+            if usar_fallback_sql:
+                cursor.execute(
+                    '''
+                    UPDATE vuelos
+                    SET asientos_disponibles = asientos_disponibles + %s
+                    WHERE vuelo_id = %s
+                    ''',
+                    (cantidad_pasajeros, vuelo_id)
+                )
         
         connection.commit()
         cursor.close()
