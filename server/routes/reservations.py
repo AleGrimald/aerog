@@ -13,7 +13,6 @@ def _sp_missing(exc: Error) -> bool:
     msg = str(exc).lower()
     return 'procedure' in msg and 'does not exist' in msg
 
-
 def _drain_call_results(cursor) -> None:
     """Consume result sets pendientes de CALL para evitar 'commands out of sync'."""
     try:
@@ -143,6 +142,26 @@ def mis_reservas(usuario_id):
         cursor.execute('CALL sp_reservations_mis_reservas(%s)', (usuario_id,))
         reservas = cursor.fetchall()
         _drain_call_results(cursor)
+
+        # Puede haber filas duplicadas por reserva si existen múltiples pagos asociados.
+        # Nos quedamos con la fila más reciente por reserva_id.
+        reservas_unicas = {}
+        for r in reservas:
+            reserva_id = r.get('reserva_id')
+            if reserva_id is None:
+                continue
+
+            existente = reservas_unicas.get(reserva_id)
+            if not existente:
+                reservas_unicas[reserva_id] = r
+                continue
+
+            fecha_nueva = r.get('pago_fecha') or r.get('fecha_reserva')
+            fecha_existente = existente.get('pago_fecha') or existente.get('fecha_reserva')
+            if fecha_nueva and (not fecha_existente or fecha_nueva >= fecha_existente):
+                reservas_unicas[reserva_id] = r
+
+        reservas = list(reservas_unicas.values())
         
         cursor.close()
         connection.close()

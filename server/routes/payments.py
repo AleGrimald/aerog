@@ -109,7 +109,7 @@ def agregar_tarjeta():
 
         connection = get_db_connection()
         _ensure_tarjetas_schema(connection)
-        cursor = connection.cursor()
+        cursor = connection.cursor(dictionary=True, buffered=True)
 
         numero_hash = hash_password(numero_limpio)
         ultimos4 = numero_limpio[-4:]
@@ -143,7 +143,8 @@ def agregar_tarjeta():
             return jsonify({'error': 'Faltan stored procedures de tarjetas/pagos en la base de datos. Ejecuta server/sql/payments_stored_procedures.sql'}), 500
         return jsonify({'error': str(exc)}), 500
     except Exception as exc:
-        return jsonify({'error': 'Error en el servidor'}), 500
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(exc)}), 500
 
 
 @cards_bp.route('/tarjeta-usuario/<int:usuario_id>', methods=['GET'])

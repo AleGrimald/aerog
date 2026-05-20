@@ -66,8 +66,11 @@ def buscar_vuelos():
         fecha_regreso = (data.get('fechaRegreso') or '').strip()
         pasajeros = data.get('pasajeros', 1)
 
-        if origen_id is None or destino_id is None or not fecha_salida or not fecha_regreso:
-            return jsonify({'error': 'Origen, destino y rango de fechas son requeridos'}), 400
+        if origen_id is None or destino_id is None or not fecha_salida:
+            return jsonify({'error': 'Origen, destino y fecha de salida son requeridos'}), 400
+
+        if trip_type == 'round-trip' and not fecha_regreso:
+            return jsonify({'error': 'Fecha de regreso requerida para ida y vuelta'}), 400
 
         try:
             origen_id = int(origen_id)
@@ -103,7 +106,8 @@ def buscar_vuelos():
 
         if trip_type == 'one-way':
             start_date = selected_salida - timedelta(days=5)
-            end_date = selected_salida + timedelta(days=5)
+            end_date = datetime.strptime('9999-12-31', '%Y-%m-%d').date()
+            
             if start_date < today:
                 start_date = today
         else:

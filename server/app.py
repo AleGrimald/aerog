@@ -24,7 +24,7 @@ load_dotenv(override=True)
 ENV = os.environ.get('ENV', 'development').lower()
 
 # production | development
-if ENV == 'development': 
+if ENV == 'production': 
     MY_SQL_HOST = os.environ.get('MYSQL_ADDON_HOST', '')
     MY_SQL_USER = os.environ.get('MYSQL_ADDON_USER', '')
     MY_SQL_PASS = os.environ.get('MYSQL_ADDON_PASSWORD', '')
@@ -59,8 +59,8 @@ CORS(app, resources={
         "origins": [
             "http://localhost:3000",
             "http://127.0.0.1:3000",
-            "http://192.168.40.226:3000",
-            "https://aerog-cliente.vercel.app",
+            "http://192.168.40.226:5000",
+            "https://aerog-server.vercel.app/",
             "https://aerog.vercel.app",
             re.compile(r"https://.*\.vercel\.app$"),
         ],

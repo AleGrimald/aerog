@@ -17,6 +17,15 @@ from .utils import (
 auth_bp = Blueprint('auth', __name__)
 
 
+def _drain_call_results(cursor) -> None:
+    """Consume todos los result sets pendientes tras un CALL para evitar 'Commands out of sync'."""
+    try:
+        while cursor.nextset():
+            pass
+    except Exception:
+        pass
+
+
 @auth_bp.route('/register', methods=['POST'])
 def registrar_usuario():
     """Registra un nuevo usuario en la base de datos"""
@@ -36,6 +45,7 @@ def registrar_usuario():
 
         cursor.execute('CALL sp_auth_buscar_usuario_por_email(%s)', (email_normalizado,))
         usuario_existente = cursor.fetchone()
+        _drain_call_results(cursor)
         if usuario_existente:
             cursor.close()
             connection.close()
@@ -55,6 +65,7 @@ def registrar_usuario():
         )
 
         row_id = cursor.fetchone() or {}
+        _drain_call_results(cursor)
         connection.commit()
         nuevo_usuario_id = row_id.get('usuario_id')
 
@@ -73,7 +84,8 @@ def registrar_usuario():
     except Error as exc:
         return jsonify({'error': str(exc)}), 500
     except Exception as exc:
-        return jsonify({'error': 'Error en el servidor'}), 500
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(exc)}), 500
 
 
 @auth_bp.route('/verificar-email', methods=['GET'])
@@ -96,6 +108,7 @@ def verificar_email():
 
         cursor.execute('CALL sp_auth_buscar_usuario_por_email(%s)', (email,))
         usuario = cursor.fetchone()
+        _drain_call_results(cursor)
         if not usuario:
             cursor.close()
             connection.close()
@@ -107,6 +120,7 @@ def verificar_email():
             return redirect(f'{FRONTEND_BASE_URL}/?email_verification=ya_verificado')
 
         cursor.execute('CALL sp_auth_activar_usuario(%s)', (usuario['usuario_id'],))
+        _drain_call_results(cursor)
         connection.commit()
         cursor.close()
         connection.close()
@@ -140,6 +154,7 @@ def login():
         cursor = connection.cursor(dictionary=True, buffered=True)
         cursor.execute('CALL sp_login_usuario(%s)', (identificador_lower,))
         usuario = cursor.fetchone()
+        _drain_call_results(cursor)
         cursor.close()
         connection.close()
         
@@ -192,7 +207,7 @@ def actualizar_perfil():
             'CALL sp_auth_actualizar_perfil(%s, %s, %s, %s, %s, %s)',
             (usuario_id, nombre, apellido, email, telefono, direccion)
         )
-        
+        _drain_call_results(cursor)
         connection.commit()
         cursor.close()
         connection.close()
