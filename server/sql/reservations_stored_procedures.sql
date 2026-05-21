@@ -9,6 +9,11 @@ DROP PROCEDURE IF EXISTS sp_reservations_delete_pago;
 DROP PROCEDURE IF EXISTS sp_reservations_delete_reserva;
 DROP PROCEDURE IF EXISTS sp_reservations_sumar_asientos;
 DROP PROCEDURE IF EXISTS sp_reservations_sumar_asiento;
+DROP PROCEDURE IF EXISTS sp_reservations_insert_usuario_secundario;
+DROP PROCEDURE IF EXISTS sp_reservations_link_usuario_secundario_reserva;
+DROP PROCEDURE IF EXISTS sp_reservations_count_secundarios;
+DROP PROCEDURE IF EXISTS sp_reservations_delete_secundarios_by_reserva;
+DROP PROCEDURE IF EXISTS sp_reservations_get_secundarios_by_reserva;
 
 DELIMITER $$
 
@@ -70,7 +75,17 @@ BEGIN
         p.estado_pago AS pago_estado,
         p.interes_aplicado AS pago_interes,
         p.cantidad_cuotas AS pago_cuotas,
-        RIGHT(tu.numero, 4) AS pago_tarjeta_ultimos4
+        CASE
+            WHEN tu.ultimos4 REGEXP '^[0-9]{4}$' THEN tu.ultimos4
+            ELSE NULL
+        END AS pago_tarjeta_ultimos4,
+        (
+            1 + (
+                SELECT COUNT(*)
+                FROM usuario_secundario_reserva_vuelo usrv
+                WHERE usrv.reserva_id = urv.reserva_id
+            )
+        ) AS cantidad_pasajeros
     FROM usuario_reservas_vuelo urv
     JOIN vuelos vd ON urv.vuelo_id = vd.vuelo_id
     JOIN aeropuertos ao ON vd.aeropuerto_origen = ao.aeropuerto_id
@@ -140,6 +155,62 @@ END$$
 CREATE PROCEDURE sp_reservations_sumar_asiento(IN p_vuelo_id INT)
 BEGIN
     CALL sp_reservations_sumar_asientos(p_vuelo_id, 1);
+END$$
+
+CREATE PROCEDURE sp_reservations_insert_usuario_secundario(
+    IN p_nombre VARCHAR(100),
+    IN p_apellido VARCHAR(100),
+    IN p_direccion VARCHAR(255),
+    IN p_telefono VARCHAR(30),
+    IN p_dni VARCHAR(20),
+    IN p_edad INT,
+    IN p_email VARCHAR(150)
+)
+BEGIN
+    INSERT INTO usuario_secundario (nombre, apellido, direccion, telefono, dni, edad, email)
+    VALUES (p_nombre, p_apellido, p_direccion, p_telefono, p_dni, p_edad, p_email);
+
+    SELECT LAST_INSERT_ID() AS usuario_secundario_id;
+END$$
+
+CREATE PROCEDURE sp_reservations_link_usuario_secundario_reserva(
+    IN p_reserva_id INT,
+    IN p_usuario_secundario_id INT
+)
+BEGIN
+    INSERT INTO usuario_secundario_reserva_vuelo (reserva_id, usuario_secundario_id)
+    VALUES (p_reserva_id, p_usuario_secundario_id);
+END$$
+
+CREATE PROCEDURE sp_reservations_count_secundarios(IN p_reserva_id INT)
+BEGIN
+    SELECT COUNT(*) AS cantidad_secundarios
+    FROM usuario_secundario_reserva_vuelo
+    WHERE reserva_id = p_reserva_id;
+END$$
+
+CREATE PROCEDURE sp_reservations_delete_secundarios_by_reserva(IN p_reserva_id INT)
+BEGIN
+    DELETE FROM usuario_secundario_reserva_vuelo
+    WHERE reserva_id = p_reserva_id;
+END$$
+
+CREATE PROCEDURE sp_reservations_get_secundarios_by_reserva(IN p_reserva_id INT)
+BEGIN
+    SELECT
+        us.usuario_secundario_id,
+        us.apellido,
+        us.nombre,
+        us.direccion,
+        us.telefono,
+        us.dni,
+        us.edad,
+        us.email
+    FROM usuario_secundario_reserva_vuelo usrv
+    JOIN usuario_secundario us
+      ON us.usuario_secundario_id = usrv.usuario_secundario_id
+    WHERE usrv.reserva_id = p_reserva_id
+    ORDER BY us.apellido, us.nombre;
 END$$
 
 DELIMITER ;

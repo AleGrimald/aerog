@@ -8,28 +8,19 @@ from .utils import get_db_connection
 flights_bp = Blueprint('flights', __name__)
 
 
-@flights_bp.route('/airport-suggestions', methods=['GET'])
-def airport_suggestions():
-    """Obtiene sugerencias de aeropuertos según búsqueda"""
-    query = request.args.get('q', '').strip()
-    if not query or len(query) < 2:
-        return jsonify([])
-
+def _drain_call_results(cursor) -> None:
+    """Consume result sets pendientes tras un CALL para evitar out-of-sync en llamadas consecutivas."""
     try:
-        connection = get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute('CALL sp_flights_airport_suggestions(%s)', (query,))
-        suggestions = cursor.fetchall()
-    except Error as exc:
-        return jsonify({'error': str(exc)}), 500
-    finally:
-        if 'cursor' in locals() and cursor is not None:
-            cursor.close()
-        if 'connection' in locals() and connection is not None and connection.is_connected():
-            connection.close()
+        while cursor.nextset():
+            pass
+    except Exception:
+        pass
 
+
+def _normalize_airport_rows(rows):
+    """Normaliza filas de aeropuertos para uso en frontend."""
     normalized = []
-    for row in suggestions:
+    for row in rows:
         aeropuerto_id = row.get('aeropuerto_id')
         nombre = row.get('nombre') or ''
         ciudad = row.get('ciudad') or ''
@@ -50,8 +41,50 @@ def airport_suggestions():
             'provincia': provincia,
             'codigo_IATA': codigo,
         })
+    return normalized
 
-    return jsonify(normalized)
+
+@flights_bp.route('/airports', methods=['GET'])
+def airports():
+    """Obtiene todos los aeropuertos para filtrado del lado del cliente."""
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        # Usamos el mismo SP de sugerencias con query vacia para traer el catalogo completo.
+        cursor.execute('CALL sp_flights_airport_suggestions(%s)', ('',))
+        rows = cursor.fetchall()
+        _drain_call_results(cursor)
+        return jsonify(_normalize_airport_rows(rows))
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    finally:
+        if 'cursor' in locals() and cursor is not None:
+            cursor.close()
+        if 'connection' in locals() and connection is not None and connection.is_connected():
+            connection.close()
+
+
+@flights_bp.route('/airport-suggestions', methods=['GET'])
+def airport_suggestions():
+    """Obtiene sugerencias de aeropuertos según búsqueda"""
+    query = request.args.get('q', '').strip()
+    if not query or len(query) < 2:
+        return jsonify([])
+
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute('CALL sp_flights_airport_suggestions(%s)', (query,))
+        suggestions = cursor.fetchall()
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    finally:
+        if 'cursor' in locals() and cursor is not None:
+            cursor.close()
+        if 'connection' in locals() and connection is not None and connection.is_connected():
+            connection.close()
+
+    return jsonify(_normalize_airport_rows(suggestions))
 
 
 @flights_bp.route('/buscar-vuelos', methods=['POST'])
@@ -61,6 +94,8 @@ def buscar_vuelos():
         data = request.get_json() or {}
         origen_id = data.get('origenId')
         destino_id = data.get('destinoId')
+        origen_ids_raw = data.get('origenIds')
+        destino_ids_raw = data.get('destinoIds')
         trip_type = (data.get('tripType') or 'one-way').strip()
         fecha_salida = (data.get('fechaSalida') or '').strip()
         fecha_regreso = (data.get('fechaRegreso') or '').strip()
@@ -73,11 +108,35 @@ def buscar_vuelos():
             return jsonify({'error': 'Fecha de regreso requerida para ida y vuelta'}), 400
 
         try:
-            origen_id = int(origen_id)
-            destino_id = int(destino_id)
             pasajeros = int(pasajeros)
         except (TypeError, ValueError):
             return jsonify({'error': 'Origen, destino y pasajeros deben ser numéricos'}), 400
+
+        def _to_int_list(value):
+            if isinstance(value, list):
+                result = []
+                for item in value:
+                    try:
+                        result.append(int(item))
+                    except (TypeError, ValueError):
+                        continue
+                return list(dict.fromkeys(result))
+            return []
+
+        origen_ids = _to_int_list(origen_ids_raw)
+        destino_ids = _to_int_list(destino_ids_raw)
+
+        if not origen_ids:
+            try:
+                origen_ids = [int(origen_id)]
+            except (TypeError, ValueError):
+                return jsonify({'error': 'Origen, destino y pasajeros deben ser numéricos'}), 400
+
+        if not destino_ids:
+            try:
+                destino_ids = [int(destino_id)]
+            except (TypeError, ValueError):
+                return jsonify({'error': 'Origen, destino y pasajeros deben ser numéricos'}), 400
 
         if pasajeros < 1 or pasajeros > 10:
             return jsonify({'error': 'La cantidad de pasajeros debe estar entre 1 y 10'}), 400
@@ -114,16 +173,32 @@ def buscar_vuelos():
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True)
         try:
-            params_search = (str(start_date), str(end_date), origen_id, destino_id, pasajeros)
+            results = []
+            params_used = []
+            for current_origen_id in origen_ids:
+                for current_destino_id in destino_ids:
+                    params_search = (str(start_date), str(end_date), current_origen_id, current_destino_id, pasajeros)
+                    params_used.append(params_search)
+                    cursor.execute('CALL sp_flights_buscar_vuelos(%s, %s, %s, %s, %s)', params_search)
+                    rows = cursor.fetchall()
+                    _drain_call_results(cursor)
+                    results.extend(rows)
 
-            cursor.execute('CALL sp_flights_buscar_vuelos(%s, %s, %s, %s, %s)', params_search)
-            results = cursor.fetchall()
+            unique_by_flight = {}
+            for row in results:
+                vuelo_id = row.get('vuelo_id')
+                if vuelo_id is None:
+                    continue
+                unique_by_flight[vuelo_id] = row
+
+            results = list(unique_by_flight.values())
+            results.sort(key=lambda r: r.get('fecha_salida') or '')
 
             # Filtro defensivo por si la BD tiene un SP desactualizado sin condición de asientos.
             results = [r for r in results if int(r.get('asientos_disponibles') or 0) >= pasajeros]
 
             print('SP SEARCH: sp_flights_buscar_vuelos')
-            print('PARAMS SEARCH:', params_search)
+            print('PARAMS SEARCH:', params_used)
             print(f'RESULTADOS BRUTOS: {len(results)} registros')
             for idx, vuelo in enumerate(results):
                 print(f'  [{idx}] {vuelo.get("codigo_vuelo")} - Salida: {vuelo.get("fecha_salida")} - Llegada: {vuelo.get("fecha_llegada")}')
