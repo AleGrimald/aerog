@@ -14,6 +14,10 @@ DROP PROCEDURE IF EXISTS sp_reservations_link_usuario_secundario_reserva;
 DROP PROCEDURE IF EXISTS sp_reservations_count_secundarios;
 DROP PROCEDURE IF EXISTS sp_reservations_delete_secundarios_by_reserva;
 DROP PROCEDURE IF EXISTS sp_reservations_get_secundarios_by_reserva;
+DROP PROCEDURE IF EXISTS sp_reservations_insert_asiento;
+DROP PROCEDURE IF EXISTS sp_reservations_get_asientos_by_vuelo;
+DROP PROCEDURE IF EXISTS sp_reservations_delete_asientos_by_reserva;
+DROP PROCEDURE IF EXISTS sp_reservations_get_asientos_by_reserva;
 
 DELIMITER $$
 
@@ -211,6 +215,39 @@ BEGIN
       ON us.usuario_secundario_id = usrv.usuario_secundario_id
     WHERE usrv.reserva_id = p_reserva_id
     ORDER BY us.apellido, us.nombre;
+END$$
+
+CREATE PROCEDURE sp_reservations_insert_asiento(
+    IN p_reserva_id INT,
+    IN p_vuelo_id INT,
+    IN p_asiento_codigo VARCHAR(8),
+    IN p_numero_pasajero INT
+)
+BEGIN
+    INSERT INTO reserva_asientos (reserva_id, vuelo_id, asiento_codigo, numero_pasajero)
+    VALUES (p_reserva_id, p_vuelo_id, UPPER(TRIM(p_asiento_codigo)), p_numero_pasajero);
+END$$
+
+CREATE PROCEDURE sp_reservations_get_asientos_by_vuelo(IN p_vuelo_id INT)
+BEGIN
+    SELECT asiento_codigo
+    FROM reserva_asientos
+    WHERE vuelo_id = p_vuelo_id
+    ORDER BY asiento_codigo;
+END$$
+
+CREATE PROCEDURE sp_reservations_delete_asientos_by_reserva(IN p_reserva_id INT)
+BEGIN
+    DELETE FROM reserva_asientos
+    WHERE reserva_id = p_reserva_id;
+END$$
+
+CREATE PROCEDURE sp_reservations_get_asientos_by_reserva(IN p_reserva_id INT)
+BEGIN
+    SELECT asiento_codigo, numero_pasajero
+    FROM reserva_asientos
+    WHERE reserva_id = p_reserva_id
+    ORDER BY numero_pasajero ASC, asiento_codigo ASC;
 END$$
 
 DELIMITER ;

@@ -22,6 +22,76 @@ def _drain_call_results(cursor) -> None:
         pass
 
 
+def _normalizar_asiento(asiento: str) -> str:
+    return str(asiento or '').strip().upper()
+
+
+def _asiento_valido(asiento: str) -> bool:
+    if len(asiento) < 2:
+        return False
+    fila = asiento[0]
+    numero = asiento[1:]
+    if fila not in {'A', 'B', 'C', 'D', 'E', 'F', 'G'}:
+        return False
+    if not numero.isdigit():
+        return False
+    return int(numero) >= 1
+
+
+def _asiento_dentro_capacidad(asiento: str, capacidad_total: int) -> bool:
+    if capacidad_total < 1:
+        return False
+
+    columnas = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+    fila = asiento[0]
+    numero_fila = int(asiento[1:])
+    idx_columna = columnas.index(fila)
+    orden_asiento = ((numero_fila - 1) * len(columnas)) + idx_columna + 1
+    return orden_asiento <= capacidad_total
+
+
+@reservations_bp.route('/asientos-vuelo/<int:vuelo_id>', methods=['GET'])
+def asientos_vuelo(vuelo_id):
+    """Devuelve asientos ocupados para un vuelo."""
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True, buffered=True)
+
+        usar_fallback_sql = False
+        try:
+            cursor.execute('CALL sp_reservations_get_asientos_by_vuelo(%s)', (vuelo_id,))
+            rows = cursor.fetchall()
+            _drain_call_results(cursor)
+        except Error as exc:
+            if _sp_missing(exc):
+                usar_fallback_sql = True
+            else:
+                raise
+
+        if usar_fallback_sql:
+            cursor.execute(
+                '''
+                SELECT asiento_codigo
+                FROM reserva_asientos
+                WHERE vuelo_id = %s
+                ORDER BY asiento_codigo
+                ''',
+                (vuelo_id,)
+            )
+            rows = cursor.fetchall()
+
+        cursor.close()
+        connection.close()
+
+        asientos = [_normalizar_asiento(r.get('asiento_codigo')) for r in rows]
+        asientos = sorted([a for a in asientos if a])
+        return jsonify({'asientos_ocupados': asientos}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+
 @reservations_bp.route('/confirmar-reserva', methods=['POST'])
 def confirmar_reserva():
     """Crea reserva para titular y vincula pasajeros secundarios."""
@@ -46,6 +116,10 @@ def confirmar_reserva():
         pasajeros_secundarios = data.get('pasajeros_secundarios', [])
         if not isinstance(pasajeros_secundarios, list):
             return jsonify({'error': 'pasajeros_secundarios debe ser una lista'}), 400
+
+        asientos_seleccionados = data.get('asientos_seleccionados', [])
+        if not isinstance(asientos_seleccionados, list):
+            return jsonify({'error': 'asientos_seleccionados debe ser una lista'}), 400
 
         secundarios_normalizados = []
         solo_letras = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZáéíóúÁÉÍÓÚñÑüÜ ')
@@ -99,10 +173,48 @@ def confirmar_reserva():
         else:
             return jsonify({'error': "estado inválido. Usa 'pendiente' o 'pagada'"}), 400
 
+        asientos_solicitados = 1 + len(secundarios_normalizados)
+
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True, buffered=True)
 
-        asientos_solicitados = 1 + len(secundarios_normalizados)
+        cursor.execute(
+            'SELECT capacidad_total FROM vuelos WHERE vuelo_id = %s LIMIT 1',
+            (vuelo_id,)
+        )
+        vuelo_row = cursor.fetchone() or {}
+        capacidad_total = int(vuelo_row.get('capacidad_total') or 0)
+        if capacidad_total < 1:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'Vuelo no encontrado o sin capacidad configurada'}), 404
+
+        asientos_normalizados = []
+        asientos_vistos = set()
+        for asiento in asientos_seleccionados:
+            asiento_norm = _normalizar_asiento(asiento)
+            if not _asiento_valido(asiento_norm):
+                cursor.close()
+                connection.close()
+                return jsonify({'error': f'Asiento inválido: {asiento}'}), 400
+            if not _asiento_dentro_capacidad(asiento_norm, capacidad_total):
+                cursor.close()
+                connection.close()
+                return jsonify({'error': f'Asiento fuera de capacidad del vuelo: {asiento_norm}'}), 400
+            if asiento_norm in asientos_vistos:
+                cursor.close()
+                connection.close()
+                return jsonify({'error': f'Asiento repetido: {asiento_norm}'}), 400
+            asientos_vistos.add(asiento_norm)
+            asientos_normalizados.append(asiento_norm)
+
+        if len(asientos_normalizados) != asientos_solicitados:
+            cursor.close()
+            connection.close()
+            return jsonify({
+                'error': f'Debes seleccionar exactamente {asientos_solicitados} asiento(s) disponibles'
+            }), 400
+
         usar_fallback_sql = False
 
         try:
@@ -196,6 +308,31 @@ def confirmar_reserva():
 
             secundarios_ids.append(usuario_secundario_id)
 
+        # Persistir selección de asientos para bloquear disponibilidad por vuelo.
+        try:
+            for idx, asiento in enumerate(asientos_normalizados, start=1):
+                if usar_fallback_sql:
+                    cursor.execute(
+                        '''
+                        INSERT INTO reserva_asientos (reserva_id, vuelo_id, asiento_codigo, numero_pasajero)
+                        VALUES (%s, %s, %s, %s)
+                        ''',
+                        (reserva_principal_id, vuelo_id, asiento, idx)
+                    )
+                else:
+                    cursor.execute(
+                        'CALL sp_reservations_insert_asiento(%s, %s, %s, %s)',
+                        (reserva_principal_id, vuelo_id, asiento, idx)
+                    )
+                    _drain_call_results(cursor)
+        except Error as exc:
+            if 'duplicate' in str(exc).lower() or '1062' in str(exc):
+                connection.rollback()
+                cursor.close()
+                connection.close()
+                return jsonify({'error': 'Uno o más asientos seleccionados ya no están disponibles'}), 409
+            raise
+
         connection.commit()
         cursor.close()
         connection.close()
@@ -204,6 +341,7 @@ def confirmar_reserva():
             'mensaje': f"Reservas creadas con estado '{estado_reserva}'",
             'reserva_ids': [reserva_principal_id],
             'cantidad_pasajeros': asientos_solicitados,
+            'asientos': asientos_normalizados,
             'usuarios_secundarios_ids': secundarios_ids,
             'estado': estado_reserva,
         }), 201
@@ -313,6 +451,53 @@ def reserva_secundarios(reserva_id):
         return jsonify({'error': 'Error en el servidor'}), 500
 
 
+@reservations_bp.route('/reserva-asientos/<int:reserva_id>', methods=['GET'])
+def reserva_asientos(reserva_id):
+    """Obtiene asientos seleccionados de una reserva."""
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True, buffered=True)
+
+        usar_fallback_sql = False
+        try:
+            cursor.execute('CALL sp_reservations_get_asientos_by_reserva(%s)', (reserva_id,))
+            asientos = cursor.fetchall()
+            _drain_call_results(cursor)
+        except Error as exc:
+            if _sp_missing(exc):
+                usar_fallback_sql = True
+            else:
+                raise
+
+        if usar_fallback_sql:
+            cursor.execute(
+                '''
+                SELECT asiento_codigo, numero_pasajero
+                FROM reserva_asientos
+                WHERE reserva_id = %s
+                ORDER BY numero_pasajero ASC, asiento_codigo ASC
+                ''',
+                (reserva_id,)
+            )
+            asientos = cursor.fetchall()
+
+        cursor.close()
+        connection.close()
+
+        normalizados = []
+        for a in asientos:
+            normalizados.append({
+                'asiento_codigo': _normalizar_asiento(a.get('asiento_codigo')),
+                'numero_pasajero': int(a.get('numero_pasajero') or 0),
+            })
+
+        return jsonify({'asientos': normalizados}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+
 @reservations_bp.route('/cancelar-reserva/<int:reserva_id>', methods=['DELETE'])
 def cancelar_reserva(reserva_id):
     """Elimina una reserva y su pago asociado"""
@@ -376,6 +561,22 @@ def cancelar_reserva(reserva_id):
         if usar_fallback_cleanup:
             cursor.execute(
                 'DELETE FROM usuario_secundario_reserva_vuelo WHERE reserva_id = %s',
+                (reserva_id,)
+            )
+
+        usar_fallback_delete_asientos = False
+        try:
+            cursor.execute('CALL sp_reservations_delete_asientos_by_reserva(%s)', (reserva_id,))
+            _drain_call_results(cursor)
+        except Error as exc:
+            if _sp_missing(exc):
+                usar_fallback_delete_asientos = True
+            else:
+                raise
+
+        if usar_fallback_delete_asientos:
+            cursor.execute(
+                'DELETE FROM reserva_asientos WHERE reserva_id = %s',
                 (reserva_id,)
             )
         
