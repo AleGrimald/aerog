@@ -36,7 +36,7 @@ BEGIN
 
     SELECT ROW_COUNT() AS affected_rows;
 END$$
-
+-- Usuarios
 -- Original:
 -- INSERT INTO usuario_reservas_vuelo (usuario_id, vuelo_id, fecha_reserva, estado)
 -- VALUES (?, ?, ?, ?);
@@ -94,7 +94,7 @@ BEGIN
     JOIN vuelos vd ON urv.vuelo_id = vd.vuelo_id
     JOIN aeropuertos ao ON vd.aeropuerto_origen = ao.aeropuerto_id
     JOIN aeropuertos ad ON vd.aeropuerto_destino = ad.aeropuerto_id
-    JOIN Usuarios u ON urv.usuario_id = u.usuario_id
+    JOIN usuarios u ON urv.usuario_id = u.usuario_id
     LEFT JOIN pagos p ON urv.reserva_id = p.reserva_id
     LEFT JOIN tarjetas_usuario tu ON p.tarjeta_id = tu.tarjeta_id
     WHERE urv.usuario_id = p_usuario_id

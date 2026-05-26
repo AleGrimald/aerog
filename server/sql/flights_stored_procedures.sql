@@ -10,6 +10,7 @@ DELIMITER $$
 -- FROM aeropuertos
 -- WHERE nombre LIKE ? OR ciudad LIKE ? OR provincia LIKE ? OR codigo_IATA LIKE ?
 -- LIMIT 10;
+
 CREATE PROCEDURE sp_flights_airport_suggestions(IN p_query VARCHAR(255))
 BEGIN
     SELECT aeropuerto_id, nombre, ciudad, provincia, codigo_IATA

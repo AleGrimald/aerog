@@ -28,7 +28,7 @@ BEGIN
         fecha_registro,
         contraseña_hash,
         activo
-    FROM Usuarios
+    FROM usuarios
     WHERE email = p_identificador
        OR LOWER(nombre) = p_identificador
     LIMIT 1;
@@ -39,7 +39,7 @@ END$$
 CREATE PROCEDURE sp_auth_buscar_usuario_por_email(IN p_email VARCHAR(255))
 BEGIN
     SELECT usuario_id, activo
-    FROM Usuarios
+    FROM usuarios
     WHERE email = p_email
     LIMIT 1;
 END$$
