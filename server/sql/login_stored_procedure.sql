@@ -1,5 +1,5 @@
 -- Consulta actual de login (original):
--- SELECT usuario_id, nombre, apellido, email, telefono, direccion, fecha_nacimiento, fecha_registro, contraseña_hash, activo
+-- SELECT usuario_id, nombre, apellido, email, telefono, direccion, dni, fecha_nacimiento, fecha_registro, contraseña_hash, activo
 -- FROM Usuarios
 -- WHERE email = ? OR LOWER(nombre) = ?
 -- LIMIT 1;
@@ -19,6 +19,7 @@ BEGIN
         email,
         telefono,
         direccion,
+        dni,
         fecha_nacimiento,
         fecha_registro,
         contraseña_hash,

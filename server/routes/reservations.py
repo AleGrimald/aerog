@@ -1,4 +1,5 @@
 """Blueprint de reservas de vuelos"""
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from mysql.connector import Error
@@ -6,6 +7,9 @@ from mysql.connector import Error
 from .utils import get_db_connection
 
 reservations_bp = Blueprint('reservations', __name__)
+
+REFUND_RATE = Decimal('0.75')
+KEEP_RATE = Decimal('0.25')
 
 
 def _sp_missing(exc: Error) -> bool:
@@ -384,6 +388,7 @@ def mis_reservas(usuario_id):
                 reservas_unicas[reserva_id] = r
 
         reservas = list(reservas_unicas.values())
+        reservas = [r for r in reservas if str(r.get('estado') or '').strip().lower() != 'cancelada']
         
         cursor.close()
         connection.close()
@@ -500,7 +505,7 @@ def reserva_asientos(reserva_id):
 
 @reservations_bp.route('/cancelar-reserva/<int:reserva_id>', methods=['DELETE'])
 def cancelar_reserva(reserva_id):
-    """Elimina una reserva y su pago asociado"""
+    """Cancela reserva: reembolsa 75% y retiene 25% del pago confirmado."""
     try:
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True, buffered=True)
@@ -515,6 +520,14 @@ def cancelar_reserva(reserva_id):
 
         vuelo_id = reserva.get('vuelo_id')
         usuario_id = reserva.get('usuario_id')
+
+        cursor.execute('SELECT estado FROM usuario_reservas_vuelo WHERE reserva_id = %s LIMIT 1', (reserva_id,))
+        estado_row = cursor.fetchone() or {}
+        estado_actual = str(estado_row.get('estado') or '').strip().lower()
+        if estado_actual == 'cancelada':
+            cursor.close()
+            connection.close()
+            return jsonify({'mensaje': 'La reserva ya estaba cancelada'}), 200
 
         cantidad_pasajeros = 1
         usar_fallback_count = False
@@ -543,10 +556,30 @@ def cancelar_reserva(reserva_id):
 
         cursor.execute('CALL sp_reservations_insert_cancelacion(%s, %s, %s)', (reserva_id, vuelo_id, usuario_id))
         _drain_call_results(cursor)
-        
-        # Primero eliminar el pago asociado (si existe)
-        cursor.execute('CALL sp_reservations_delete_pago(%s)', (reserva_id,))
-        _drain_call_results(cursor)
+
+        # Reembolso parcial: si el pago estaba confirmado, se retiene 25%.
+        cursor.execute(
+            '''
+            SELECT pago_id, monto, estado_pago
+            FROM pagos
+            WHERE reserva_id = %s
+            ORDER BY pago_id DESC
+            LIMIT 1
+            ''',
+            (reserva_id,)
+        )
+        pago = cursor.fetchone()
+        if pago:
+            estado_pago = str(pago.get('estado_pago') or '').strip().lower()
+            if estado_pago == 'confirmado':
+                monto_original = Decimal(str(pago.get('monto') or 0))
+                monto_retenido = (monto_original * KEEP_RATE).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                cursor.execute(
+                    'UPDATE pagos SET monto = %s WHERE pago_id = %s',
+                    (str(monto_retenido), pago.get('pago_id'))
+                )
+            else:
+                cursor.execute('DELETE FROM pagos WHERE reserva_id = %s', (reserva_id,))
 
         usar_fallback_cleanup = False
         try:
@@ -579,13 +612,20 @@ def cancelar_reserva(reserva_id):
                 'DELETE FROM reserva_asientos WHERE reserva_id = %s',
                 (reserva_id,)
             )
-        
-        # Luego eliminar la reserva
-        cursor.execute('CALL sp_reservations_delete_reserva(%s)', (reserva_id,))
-        delete_result = cursor.fetchone() or {}
-        _drain_call_results(cursor)
 
-        if int(delete_result.get('affected_rows') or 0) > 0:
+        # Marcar reserva como cancelada (histórico) en lugar de eliminarla.
+        cursor.execute(
+            '''
+            UPDATE usuario_reservas_vuelo
+            SET estado = 'Cancelada'
+            WHERE reserva_id = %s
+              AND estado <> 'Cancelada'
+            ''',
+            (reserva_id,)
+        )
+        updated_rows = int(cursor.rowcount or 0)
+
+        if updated_rows > 0:
             usar_fallback_sql = False
             try:
                 cursor.execute('CALL sp_reservations_sumar_asientos(%s, %s)', (vuelo_id, cantidad_pasajeros))
@@ -609,7 +649,11 @@ def cancelar_reserva(reserva_id):
         connection.commit()
         cursor.close()
         connection.close()
-        return jsonify({'mensaje': 'Reserva cancelada correctamente'}), 200
+        return jsonify({
+            'mensaje': 'Reserva cancelada correctamente. Se reembolso el 75% y se retuvo el 25%.',
+            'porcentaje_reembolso': float(REFUND_RATE * 100),
+            'porcentaje_retenido': float(KEEP_RATE * 100),
+        }), 200
     except Error as exc:
         return jsonify({'error': str(exc)}), 500
     except Exception as exc:

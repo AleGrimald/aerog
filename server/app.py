@@ -64,7 +64,7 @@ CORS(app, resources={
             "https://aerog.vercel.app",
             re.compile(r"https://.*\.vercel\.app$"),
         ],
-        "methods": ["GET", "POST", "OPTIONS", "DELETE", "PUT"],
+        "methods": ["GET", "POST", "OPTIONS", "DELETE", "PUT", "PATCH"],
         "allow_headers": ["Content-Type"],
     }
 })

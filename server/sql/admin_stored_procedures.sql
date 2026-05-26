@@ -116,7 +116,7 @@ END$$
 
 CREATE PROCEDURE sp_admin_usuarios_listar()
 BEGIN
-    SELECT usuario_id, nombre, apellido, email, telefono, direccion, fecha_nacimiento, fecha_registro, activo
+    SELECT usuario_id, nombre, apellido, email, telefono, direccion, dni, fecha_nacimiento, fecha_registro, activo
     FROM Usuarios
     ORDER BY fecha_registro DESC;
 END$$
@@ -136,12 +136,13 @@ CREATE PROCEDURE sp_admin_usuarios_crear(
     IN p_contrasena_hash TEXT,
     IN p_telefono VARCHAR(50),
     IN p_direccion VARCHAR(255),
+    IN p_dni VARCHAR(9),
     IN p_fecha_nacimiento DATE,
     IN p_fecha_registro DATETIME
 )
 BEGIN
-    INSERT INTO Usuarios (nombre, apellido, email, contraseña_hash, telefono, direccion, fecha_nacimiento, fecha_registro, activo)
-    VALUES (p_nombre, p_apellido, p_email, p_contrasena_hash, p_telefono, p_direccion, p_fecha_nacimiento, p_fecha_registro, 1);
+    INSERT INTO Usuarios (nombre, apellido, email, contraseña_hash, telefono, direccion, dni, fecha_nacimiento, fecha_registro, activo)
+    VALUES (p_nombre, p_apellido, p_email, p_contrasena_hash, p_telefono, p_direccion, p_dni, p_fecha_nacimiento, p_fecha_registro, 1);
 
     SELECT LAST_INSERT_ID() AS usuario_id;
 END$$
@@ -173,6 +174,7 @@ CREATE PROCEDURE sp_admin_usuarios_actualizar_con_password(
     IN p_email VARCHAR(255),
     IN p_telefono VARCHAR(50),
     IN p_direccion VARCHAR(255),
+    IN p_dni VARCHAR(9),
     IN p_fecha_nacimiento DATE,
     IN p_contrasena_hash TEXT
 )
@@ -183,6 +185,7 @@ BEGIN
         email = p_email,
         telefono = p_telefono,
         direccion = p_direccion,
+        dni = p_dni,
         fecha_nacimiento = p_fecha_nacimiento,
         contraseña_hash = p_contrasena_hash
     WHERE usuario_id = p_usuario_id;
@@ -195,6 +198,7 @@ CREATE PROCEDURE sp_admin_usuarios_actualizar_sin_password(
     IN p_email VARCHAR(255),
     IN p_telefono VARCHAR(50),
     IN p_direccion VARCHAR(255),
+    IN p_dni VARCHAR(9),
     IN p_fecha_nacimiento DATE
 )
 BEGIN
@@ -204,6 +208,7 @@ BEGIN
         email = p_email,
         telefono = p_telefono,
         direccion = p_direccion,
+        dni = p_dni,
         fecha_nacimiento = p_fecha_nacimiento
     WHERE usuario_id = p_usuario_id;
 END$$
@@ -240,7 +245,7 @@ BEGIN
         p.metodo_pago AS pago_metodo,
         p.estado_pago AS pago_estado
     FROM usuario_reservas_vuelo urv
-    JOIN Usuarios u ON urv.usuario_id = u.usuario_id
+    JOIN usuarios u ON urv.usuario_id = u.usuario_id
     JOIN vuelos v ON urv.vuelo_id = v.vuelo_id
     JOIN aeropuertos ao ON v.aeropuerto_origen = ao.aeropuerto_id
     JOIN aeropuertos ad ON v.aeropuerto_destino = ad.aeropuerto_id

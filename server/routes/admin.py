@@ -267,7 +267,7 @@ def admin_usuarios_crear():
     """Crea un nuevo usuario (admin)"""
     try:
         data = request.get_json() or {}
-        campos = ['nombre', 'apellido', 'email', 'telefono', 'direccion', 'fecha_nacimiento', 'password']
+        campos = ['nombre', 'apellido', 'email', 'telefono', 'direccion', 'dni', 'fecha_nacimiento', 'password']
         faltantes = [c for c in campos if str(data.get(c, '')).strip() == '']
         if faltantes:
             return jsonify({'error': f'Campos faltantes: {", ".join(faltantes)}'}), 400
@@ -277,8 +277,12 @@ def admin_usuarios_crear():
         email = str(data.get('email')).strip().lower()
         telefono = str(data.get('telefono')).strip()
         direccion = str(data.get('direccion')).strip()
+        dni = str(data.get('dni')).strip()
         fecha_nacimiento = str(data.get('fecha_nacimiento')).strip()
         password = str(data.get('password')).strip()
+
+        if not dni.isdigit() or len(dni) < 7 or len(dni) > 9:
+            return jsonify({'error': 'El DNI debe contener solo dígitos (7-9).'}), 400
 
         if len(password) < 6:
             return jsonify({'error': 'La contraseña debe tener al menos 6 caracteres'}), 400
@@ -294,11 +298,18 @@ def admin_usuarios_crear():
             connection.close()
             return jsonify({'error': 'El email ya está registrado'}), 409
 
+        cursor.execute('SELECT usuario_id FROM Usuarios WHERE dni = %s LIMIT 1', (dni,))
+        dni_exists = cursor.fetchone()
+        if dni_exists:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'El DNI ya está registrado'}), 409
+
         contraseña_hash = hash_password(password)
         fecha_registro = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute(
-            'CALL sp_admin_usuarios_crear(%s, %s, %s, %s, %s, %s, %s, %s)',
-            (nombre, apellido, email, contraseña_hash, telefono, direccion, fecha_nacimiento, fecha_registro)
+            'CALL sp_admin_usuarios_crear(%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+            (nombre, apellido, email, contraseña_hash, telefono, direccion, dni, fecha_nacimiento, fecha_registro)
         )
         nuevo_id = (cursor.fetchone() or {}).get('usuario_id')
         _drain_call_results(cursor)
@@ -317,7 +328,7 @@ def admin_usuarios_actualizar(usuario_id):
     """Actualiza un usuario existente"""
     try:
         data = request.get_json() or {}
-        campos = ['nombre', 'apellido', 'email', 'telefono', 'direccion', 'fecha_nacimiento']
+        campos = ['nombre', 'apellido', 'email', 'telefono', 'direccion', 'dni', 'fecha_nacimiento']
         faltantes = [c for c in campos if str(data.get(c, '')).strip() == '']
         if faltantes:
             return jsonify({'error': f'Campos faltantes: {", ".join(faltantes)}'}), 400
@@ -327,8 +338,12 @@ def admin_usuarios_actualizar(usuario_id):
         email = str(data.get('email')).strip().lower()
         telefono = str(data.get('telefono')).strip()
         direccion = str(data.get('direccion')).strip()
+        dni = str(data.get('dni')).strip()
         fecha_nacimiento = str(data.get('fecha_nacimiento')).strip()
         password = str(data.get('password') or '').strip()
+
+        if not dni.isdigit() or len(dni) < 7 or len(dni) > 9:
+            return jsonify({'error': 'El DNI debe contener solo dígitos (7-9).'}), 400
 
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True, buffered=True)
@@ -349,6 +364,13 @@ def admin_usuarios_actualizar(usuario_id):
             connection.close()
             return jsonify({'error': 'El email ya está en uso por otro usuario'}), 409
 
+        cursor.execute('SELECT usuario_id FROM Usuarios WHERE dni = %s AND usuario_id <> %s LIMIT 1', (dni, usuario_id))
+        dni_duplicado = cursor.fetchone()
+        if dni_duplicado:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'El DNI ya está en uso por otro usuario'}), 409
+
         if password:
             if len(password) < 6:
                 cursor.close()
@@ -356,14 +378,14 @@ def admin_usuarios_actualizar(usuario_id):
                 return jsonify({'error': 'La contraseña debe tener al menos 6 caracteres'}), 400
             contraseña_hash = hash_password(password)
             cursor.execute(
-                'CALL sp_admin_usuarios_actualizar_con_password(%s, %s, %s, %s, %s, %s, %s, %s)',
-                (usuario_id, nombre, apellido, email, telefono, direccion, fecha_nacimiento, contraseña_hash)
+                'CALL sp_admin_usuarios_actualizar_con_password(%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+                (usuario_id, nombre, apellido, email, telefono, direccion, dni, fecha_nacimiento, contraseña_hash)
             )
             _drain_call_results(cursor)
         else:
             cursor.execute(
-                'CALL sp_admin_usuarios_actualizar_sin_password(%s, %s, %s, %s, %s, %s, %s)',
-                (usuario_id, nombre, apellido, email, telefono, direccion, fecha_nacimiento)
+                'CALL sp_admin_usuarios_actualizar_sin_password(%s, %s, %s, %s, %s, %s, %s, %s)',
+                (usuario_id, nombre, apellido, email, telefono, direccion, dni, fecha_nacimiento)
             )
             _drain_call_results(cursor)
 
@@ -409,6 +431,37 @@ def admin_usuarios_eliminar(usuario_id):
         return jsonify({'error': 'Error en el servidor'}), 500
 
 
+@admin_bp.route('/usuarios/<int:usuario_id>/activar', methods=['PATCH'])
+def admin_usuarios_activar(usuario_id):
+    """Reactiva un usuario inactivo (soft delete reversal)"""
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True, buffered=True)
+
+        cursor.execute('CALL sp_admin_usuarios_obtener_estado(%s)', (usuario_id,))
+        usuario = cursor.fetchone()
+        _drain_call_results(cursor)
+        if not usuario:
+            cursor.close()
+            connection.close()
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+
+        if int(usuario.get('activo') or 0) == 1:
+            cursor.close()
+            connection.close()
+            return jsonify({'mensaje': 'Usuario ya estaba activo'}), 200
+
+        cursor.execute('UPDATE Usuarios SET activo = 1 WHERE usuario_id = %s', (usuario_id,))
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return jsonify({'mensaje': 'Usuario activado correctamente'}), 200
+    except Error as exc:
+        return jsonify({'error': str(exc)}), 500
+    except Exception:
+        return jsonify({'error': 'Error en el servidor'}), 500
+
+
 @admin_bp.route('/reservas', methods=['GET'])
 def admin_reservas_listar():
     """Lista todas las reservas"""
@@ -418,6 +471,7 @@ def admin_reservas_listar():
         cursor.execute('CALL sp_admin_reservas_listar()')
         rows = cursor.fetchall()
         _drain_call_results(cursor)
+        rows = [row for row in rows if str(row.get('estado') or '').strip().lower() != 'cancelada']
         for row in rows:
             if row.get('fecha_reserva') is not None and hasattr(row['fecha_reserva'], 'strftime'):
                 row['fecha_reserva'] = row['fecha_reserva'].strftime('%Y-%m-%d %H:%M:%S')
@@ -443,9 +497,14 @@ def admin_estadisticas():
         _drain_call_results(cursor)
         recaudacion_rows.reverse()
 
-        cursor.execute('CALL sp_admin_estadisticas_total_reservas()')
-        reservados = cursor.fetchone().get('total', 0)
-        _drain_call_results(cursor)
+        cursor.execute(
+            '''
+            SELECT COUNT(*) AS total
+            FROM usuario_reservas_vuelo
+            WHERE estado <> 'Cancelada'
+            '''
+        )
+        reservados = (cursor.fetchone() or {}).get('total', 0)
 
         cursor.execute('CALL sp_admin_estadisticas_total_cancelaciones()')
         cancelados = cursor.fetchone().get('total', 0)

@@ -3,6 +3,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 from mysql.connector import Error
 from mercadopago_utils import crear_preferencia_pago_qr, obtener_estado_pago_por_reserva
+from email_utils import EnviarMail
 
 from .utils import (
     get_db_connection,
@@ -25,6 +26,149 @@ def _drain_call_results(cursor) -> None:
             pass
     except Exception:
         pass
+
+
+def _format_datetime(value) -> str:
+    if value is None:
+        return '-'
+    if hasattr(value, 'strftime'):
+        return value.strftime('%d/%m/%Y %H:%M:%S')
+    text = str(value).replace('T', ' ').split('.')[0].replace('Z', '')
+    parts = text.split(' ')
+    date_part = parts[0] if parts else ''
+    time_part = parts[1] if len(parts) > 1 else '00:00:00'
+    ymd = date_part.split('-')
+    if len(ymd) == 3:
+        return f"{ymd[2].zfill(2)}/{ymd[1].zfill(2)}/{ymd[0]} {time_part}"
+    return text
+
+
+def _obtener_ticket_por_reserva(reserva_id: int):
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True, buffered=True)
+    try:
+        cursor.execute(
+            '''
+            SELECT
+                urv.reserva_id,
+                urv.estado,
+                urv.fecha_reserva,
+                urv.usuario_id,
+                u.nombre,
+                u.apellido,
+                u.email,
+                v.codigo_vuelo,
+                v.fecha_salida,
+                v.fecha_llegada,
+                ao.nombre AS origen_nombre,
+                ao.provincia AS provincia_origen,
+                ad.nombre AS destino_nombre,
+                ad.provincia AS provincia_destino,
+                p.monto AS pago_monto,
+                p.metodo_pago AS pago_metodo,
+                p.estado_pago AS pago_estado,
+                p.cantidad_cuotas AS pago_cuotas,
+                p.interes_aplicado AS pago_interes,
+                p.fecha_pago AS pago_fecha
+            FROM usuario_reservas_vuelo urv
+            JOIN Usuarios u ON urv.usuario_id = u.usuario_id
+            JOIN vuelos v ON urv.vuelo_id = v.vuelo_id
+            JOIN aeropuertos ao ON v.aeropuerto_origen = ao.aeropuerto_id
+            JOIN aeropuertos ad ON v.aeropuerto_destino = ad.aeropuerto_id
+            LEFT JOIN pagos p ON p.pago_id = (
+                SELECT p2.pago_id
+                FROM pagos p2
+                WHERE p2.reserva_id = urv.reserva_id
+                ORDER BY p2.pago_id DESC
+                LIMIT 1
+            )
+            WHERE urv.reserva_id = %s
+            LIMIT 1
+            ''',
+            (reserva_id,)
+        )
+        ticket = cursor.fetchone()
+        if not ticket:
+            return None
+
+        cursor.execute(
+            '''
+            SELECT asiento_codigo, numero_pasajero
+            FROM reserva_asientos
+            WHERE reserva_id = %s
+            ORDER BY numero_pasajero ASC, asiento_codigo ASC
+            ''',
+            (reserva_id,)
+        )
+        asientos = cursor.fetchall() or []
+
+        cursor.execute(
+            '''
+            SELECT COUNT(*) AS cantidad_secundarios
+            FROM usuario_secundario_reserva_vuelo
+            WHERE reserva_id = %s
+            ''',
+            (reserva_id,)
+        )
+        count_row = cursor.fetchone() or {}
+
+        ticket['cantidad_pasajeros'] = 1 + int(count_row.get('cantidad_secundarios') or 0)
+        ticket['asientos'] = asientos
+        return ticket
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def _enviar_ticket_confirmacion(reserva_id: int) -> bool:
+    ticket = _obtener_ticket_por_reserva(reserva_id)
+    if not ticket:
+        return False
+
+    email_destino = str(ticket.get('email') or '').strip()
+    if not email_destino:
+        return False
+
+    monto = float(ticket.get('pago_monto') or 0)
+    asientos = ticket.get('asientos') or []
+    asientos_texto = ', '.join(str(a.get('asiento_codigo') or '').upper() for a in asientos if a.get('asiento_codigo')) or 'No asignado'
+
+    subject = f"Aero G - Ticket de vuelo #{ticket.get('reserva_id')}"
+    text = (
+        f"Reserva confirmada: #{ticket.get('reserva_id')}\n"
+        f"Pasajero: {ticket.get('nombre', '')} {ticket.get('apellido', '')}\n"
+        f"Vuelo: {ticket.get('codigo_vuelo', '-')}\n"
+        f"Ruta: {ticket.get('origen_nombre', '-')} ({ticket.get('provincia_origen', '-')}) -> "
+        f"{ticket.get('destino_nombre', '-')} ({ticket.get('provincia_destino', '-')})\n"
+        f"Salida: {_format_datetime(ticket.get('fecha_salida'))}\n"
+        f"Llegada: {_format_datetime(ticket.get('fecha_llegada'))}\n"
+        f"Asientos: {asientos_texto}\n"
+        f"Cantidad de pasajeros: {ticket.get('cantidad_pasajeros', 1)}\n"
+        f"Pago: {ticket.get('pago_metodo', '-')} - ${monto:.2f}\n"
+        f"Fecha de pago: {_format_datetime(ticket.get('pago_fecha'))}\n"
+    )
+
+    html = f"""
+    <div style='font-family:Segoe UI, Arial, sans-serif; max-width:680px; margin:0 auto; color:#0f172a;'>
+      <h2 style='margin-bottom:8px;'>Aero G - Ticket de Vuelo</h2>
+      <p style='margin-top:0; color:#475569;'>Tu pago fue confirmado y este es tu boleto.</p>
+      <div style='border:1px solid #cbd5e1; border-radius:16px; padding:20px; background:#f8fafc;'>
+        <p><strong>Reserva:</strong> #{ticket.get('reserva_id')}</p>
+        <p><strong>Pasajero:</strong> {ticket.get('nombre', '')} {ticket.get('apellido', '')}</p>
+        <p><strong>Vuelo:</strong> {ticket.get('codigo_vuelo', '-')}</p>
+        <p><strong>Ruta:</strong> {ticket.get('origen_nombre', '-')} ({ticket.get('provincia_origen', '-')}) -> {ticket.get('destino_nombre', '-')} ({ticket.get('provincia_destino', '-')})</p>
+        <p><strong>Salida:</strong> {_format_datetime(ticket.get('fecha_salida'))}</p>
+        <p><strong>Llegada:</strong> {_format_datetime(ticket.get('fecha_llegada'))}</p>
+        <p><strong>Asientos:</strong> {asientos_texto}</p>
+        <p><strong>Cantidad de pasajeros:</strong> {ticket.get('cantidad_pasajeros', 1)}</p>
+        <p><strong>Pago:</strong> {ticket.get('pago_metodo', '-')} - ${monto:.2f}</p>
+        <p><strong>Fecha de pago:</strong> {_format_datetime(ticket.get('pago_fecha'))}</p>
+      </div>
+      <p style='font-size:12px; color:#64748b; margin-top:16px;'>Presenta este correo como comprobante de compra.</p>
+    </div>
+    """
+
+    return EnviarMail(email_destino, subject, text, html)
 
 
 def _ensure_tarjetas_schema(connection):
@@ -335,10 +479,12 @@ def verificar_pago_qr():
             connection.commit()
             cursor.close()
             connection.close()
+            email_enviado = _enviar_ticket_confirmacion(int(reserva_id))
             return jsonify({
                 'estado': 'confirmado',
                 'payment_id': estado_mp.get('payment_id'),
                 'mensaje': 'Pago aprobado y reserva confirmada',
+                'email_enviado': email_enviado,
             }), 200
 
         if status in ('rejected', 'cancelled', 'refunded', 'charged_back'):
@@ -431,7 +577,14 @@ def pagar_reserva():
         cursor.close()
         connection.close()
 
-        return jsonify({'mensaje': 'Pago registrado y reserva confirmada', 'monto_final': monto_final, 'interes': interes}), 200
+        email_enviado = _enviar_ticket_confirmacion(int(reserva_id))
+
+        return jsonify({
+            'mensaje': 'Pago registrado y reserva confirmada',
+            'monto_final': monto_final,
+            'interes': interes,
+            'email_enviado': email_enviado,
+        }), 200
     except Error as exc:
         return jsonify({'error': str(exc)}), 500
     except Exception as exc:
